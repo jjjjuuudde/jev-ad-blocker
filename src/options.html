@@ -42,7 +42,7 @@
       <input type="number" id="threshold" min="0.5" max="1" step="0.01" />
     </label>
     <label>Max elements per page load
-      <small>Elements are taken in document order until this cap. 0 means no cap (every element, which can cost a lot on big pages).</small>
+      <small>0 means no cap: every rendered element on the page is sent to jev. Set a number to stop after that many, in document order, on big pages.</small>
       <input type="number" id="maxElements" min="0" step="50" />
     </label>
     <label>Elements per request

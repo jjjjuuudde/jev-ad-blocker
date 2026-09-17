@@ -6,8 +6,8 @@ export const DEFAULT_SETTINGS = {
   // that are costly to get wrong (https://docs.typesafe.ai/confidence).
   threshold: 0.9,
   // Elements are walked in document order; scanning stops after this many
-  // rendered elements per page load. 0 = no cap (can get expensive on big pages).
-  maxElements: 600,
+  // rendered elements per page load. 0 = no cap: every rendered element goes to jev.
+  maxElements: 0,
   // How many elements ride in one jev request (one noul question each).
   batchSize: 25,
   // Requests in flight at once.

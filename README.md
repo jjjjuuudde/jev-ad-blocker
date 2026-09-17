@@ -40,13 +40,13 @@ Defaults (all adjustable on the options page):
 | Setting | Default | Why |
 | --- | --- | --- |
 | Threshold | 0.9 | jev's "proceed automatically" band |
-| Max elements per load | 600 | keeps a big page to ~24 requests; set 0 for truly every element |
+| Max elements per load | 0 (no cap) | every rendered element goes to jev; set a number to stop early on huge pages |
 | Elements per request | 25 | one request, 25 questions |
 | Requests in flight | 3 | |
 | Action | remove (restorable) | "hide" is available |
 | Text-share safety rail | 50% | never removes an element holding more than half the page's text |
 
-Elements are taken in document order. Anything not rendered (`display: none`, zero rects), `script`/`style`/`head` and SVG internals are skipped. When a parent is removed, its children are dropped from later batches instead of being classified.
+Elements are taken in document order, all of them by default (a busy news page is a few thousand elements, so roughly 100 requests per load; verdicts are cached, and the popup shows token usage). Anything not rendered (`display: none`, zero rects), `script`/`style`/`head` and SVG internals are skipped. When a parent is removed, its children are dropped from later batches instead of being classified.
 
 ## Popup
 
