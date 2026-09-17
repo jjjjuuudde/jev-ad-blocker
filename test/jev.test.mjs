@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildRequest, parseAnswers, classifyBatch, hashString, costUsd, formatUsd, API_URL, JevError } from "../src/jev.js";
+import { buildRequest, parseAnswers, classifyBatch, hashString, costUsd, formatUsd, makeLimiter, API_URL, JevError } from "../src/jev.js";
 
 const page = { url: "https://example.com/a", title: "Example" };
 const elements = [
@@ -97,4 +97,23 @@ test("costUsd and formatUsd follow jev's list price ($0.042/MTok in, output free
   assert.equal(formatUsd(0.0021), "$0.0021");
   assert.equal(formatUsd(0.021), "$0.021");
   assert.equal(formatUsd(1.5), "$1.50");
+});
+
+test("makeLimiter spaces requests to the bucket rate and pauses on 429 Retry-After", async () => {
+  let clock = 0;
+  const waits = [];
+  const sleep = async (ms) => { waits.push(ms); clock += ms; };
+  const lim = makeLimiter({ perSecond: 10, burst: 2, now: () => clock, sleep });
+  await lim.acquire(); await lim.acquire();          // burst of 2 goes straight through
+  assert.deepEqual(waits, []);
+  await lim.acquire();                               // third waits for one token (100 ms at 10/s)
+  assert.deepEqual(waits, [100]);
+
+  const calls = [];
+  const fetchImpl = async (url) => { calls.push(clock); return { status: url === "429" ? 429 : 200, headers: { get: (h) => (h === "retry-after" ? "3" : null) } }; };
+  const f = lim.limited(fetchImpl);
+  await f("429");                                    // pauses the bucket for 3 s
+  const before = clock;
+  await f("ok");
+  assert.ok(clock - before >= 3000, `expected a 3 s pause, got ${clock - before} ms`);
 });

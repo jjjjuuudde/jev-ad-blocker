@@ -16,6 +16,14 @@
   const HINT_RE = /\b(ad|ads|advert|advertis|adsbygoogle|sponsor|promo|promoted|banner|doubleclick|googlesyndication|taboola|outbrain|adnxs|criteo|amazon-adsystem|mgid|revcontent|native)\b|_ad_|-ad-|\bad[-_]?(slot|unit|wrapper|container|box|frame)/i;
   // Tags that count as "real content" when deciding whether a wrapper is empty.
   const MEDIA_TAGS = new Set(["img", "iframe", "video", "audio", "canvas", "picture", "object", "embed", "input", "select", "textarea"]);
+  // Text-level tags: on their own they are never the ad, they sit inside it. The
+  // container gets classified instead. (Kept when they carry ad hints or media.)
+  const TEXT_TAGS = new Set([
+    "span", "b", "i", "em", "strong", "small", "label", "sup", "sub", "u", "s", "abbr", "cite", "code", "kbd",
+    "mark", "q", "time", "var", "font", "p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "td", "th", "dt", "dd",
+    "legend", "figcaption", "summary", "pre", "blockquote", "yt-formatted-string",
+  ]);
+  const MIN_SIZE_PX = 20;          // smaller than this can't be a visible ad worth removing
   const MAX_TEXT = 200;
   const MAX_ATTR = 120;
   const MAX_HTML = 800;            // outerHTML snippet kept per removed element, for the popup
@@ -46,6 +54,7 @@
   const records = [];            // { el, parent, next, prevDisplay, prevOutline, prevTitle, action }
   const takenOut = new Set();    // elements we removed or hid (for the empty-wrapper check)
   let seen = new WeakSet();      // elements already classified in this page's lifetime
+  const ignored = new WeakSet(); // elements that can never be candidates (text-level, leaf text); permanent
   let running = false;
   let paused = false;            // after "restore": leave the page alone until a rescan
   let nextId = 0;
@@ -109,6 +118,7 @@
   async function prepare() {
     const cfg = await send({ type: "getConfig" });
     const settings = cfg.settings;
+    settings.protectedSelector = protectedSelectorFor(settings.protectedSelectors);
     if (!settings.enabled || settings.disabledSites.includes(location.hostname)) {
       state.status = "disabled";
       stopWatching();
@@ -320,13 +330,15 @@
 
   // Sites like YouTube swap the page without a load event. Watch the URL
   // (popstate/hashchange, plus a poll for pushState, which content scripts
-  // can't hook) and treat a change as a new page: full rescan.
+  // can't hook). A change gets an in-view sweep rather than a full rescan:
+  // the header and sidebar that survive the navigation were already
+  // classified, and the new content arrives as added nodes anyway.
   function watchUrl() {
     const check = () => {
       if (location.href === lastHref) return;
       lastHref = location.href;
       clearTimeout(navTimer);
-      navTimer = setTimeout(() => { navTimer = 0; run("navigate").catch(() => {}); }, NAV_DEBOUNCE_MS);
+      navTimer = setTimeout(() => { navTimer = 0; sweep(); }, NAV_DEBOUNCE_MS);
     };
     addEventListener("popstate", check);
     addEventListener("hashchange", check);
@@ -362,6 +374,20 @@
 
   // ---------- element collection ----------
 
+  // "hostname selector" lines that apply to this page, joined into one selector
+  // ("" when none). A hostname matches itself and its subdomains.
+  function protectedSelectorFor(lines) {
+    const host = location.hostname;
+    const parts = [];
+    for (const line of lines || []) {
+      const m = String(line).trim().match(/^(\S+)\s+(.+)$/);
+      if (!m) continue;
+      const [, h, sel] = m;
+      if (host === h || host.endsWith(`.${h}`)) parts.push(sel.trim());
+    }
+    return parts.join(", ");
+  }
+
   function collect(settings, roots) {
     const total = document.body ? document.body.querySelectorAll("*").length : 0;
     const textTotal = document.body ? normText(document.body.textContent).length : 0;
@@ -373,16 +399,41 @@
       const list = root === document.body ? root.querySelectorAll("*") : [root, ...root.querySelectorAll("*")];
       for (const el of list) {
         if (settings.maxElements > 0 && items.length >= settings.maxElements) { capped = true; break; }
-        if (seen.has(el)) continue;
+        if (seen.has(el) || ignored.has(el)) continue;
         if (shouldSkip(el)) continue;
-        if (view && !inView(el, view)) continue; // not marked seen: it gets its turn when scrolled to
-        seen.add(el);
+        if (settings.protectedSelector && isProtected(el, settings.protectedSelector)) { seen.add(el); continue; }
+        const rect = el.getBoundingClientRect();
+        // Size and view are not permanent: a collapsed ad slot grows later, an
+        // off-screen one scrolls in. Neither marks the element seen.
+        if (rect.width < MIN_SIZE_PX || rect.height < MIN_SIZE_PX) continue;
+        if (view && !inView(el, view)) continue;
         const desc = describe(el);
+        if (!canBeAd(el, desc, rect)) { ignored.add(el); continue; }
+        seen.add(el);
         const id = `e${nextId++}`;
-        items.push({ el, id, desc, sig: signature(desc), summary: summarize(el, desc), rect: visibleRect(el.getBoundingClientRect()), priority: adPriority(desc) });
+        items.push({ el, id, desc, sig: signature(desc), summary: summarize(el, desc), rect: visibleRect(rect), priority: adPriority(desc) });
       }
     }
     return { items, total, textTotal, capped };
+  }
+
+  // Cheap structural filter: things that are never the ad themselves, so no
+  // question is spent on them. Anything with an ad hint, media, an iframe, or
+  // a link is always kept; jev makes the actual call on everything kept.
+  function canBeAd(el, d, rect) {
+    if (d.dataAd || (d.attrHints && d.attrHints.length)) return true;
+    if (d.tag === "iframe" || d.tag === "img" || d.tag === "video" || d.tag === "a" || d.tag === "ins" || d.tag === "picture") return true;
+    if (d.iframeHosts || d.imgHosts || d.linkHosts) return true;         // has media or links inside
+    if (el.querySelector("iframe, img, video, picture, canvas, svg, a[href]")) return true; // big wrappers (>200 descendants) skip host scans
+    if (TEXT_TAGS.has(d.tag)) return false;                              // text-level, no media: the container gets classified
+    if (!d.descendants) return false;                                    // a leaf with only text
+    // A wrapper whose only element child fills the same box: classify the
+    // child, the wrapper adds nothing (and the collapse pass removes it anyway).
+    if (el.childElementCount === 1) {
+      const c = el.firstElementChild.getBoundingClientRect();
+      if (Math.abs(c.width - rect.width) < 2 && Math.abs(c.height - rect.height) < 2) return false;
+    }
+    return true;
   }
 
   // Rough "how much does this smell like an ad" score used only to order the
@@ -395,6 +446,10 @@
     if (d.iframeHosts && d.iframeHosts.length) return 2;
     if (offSite(d.linkHosts) || offSite(d.imgHosts)) return 1;
     return 0;
+  }
+
+  function isProtected(el, selector) {
+    try { return Boolean(el.closest(selector)); } catch { return false; } // bad selector in settings
   }
 
   function viewportBox() {

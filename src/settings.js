@@ -9,8 +9,10 @@ export const DEFAULT_SETTINGS = {
   // Elements are walked in document order; scanning stops after this many
   // rendered elements per page load. 0 = no cap: every rendered element goes to jev.
   maxElements: 0,
-  // How many elements ride in one jev request (one noul question each).
-  batchSize: 25,
+  // How many elements ride in one jev request (one noul question each). jev
+  // answers 400 questions in about a second, no slower than 100, and the rate
+  // limit is per request (1,200/min), so big batches are the main lever.
+  batchSize: 200,
   // Requests in flight at once (jev allows 1,200 requests a minute).
   concurrency: 6,
   // "remove" detaches the node (restorable from the popup), "hide" sets
@@ -27,6 +29,10 @@ export const DEFAULT_SETTINGS = {
   // every page load classifies fresh: a load costs a fraction of a cent, and
   // fresh verdicts follow the page as it changes.
   cacheDays: 0,
+  // Independently of cacheDays, reuse a confident "not an ad" verdict (p below
+  // 0.2) for this many minutes. A clean nav bar is still clean a minute later,
+  // and most of a repeat page is exactly that. 0 turns it off.
+  cleanCacheMinutes: 60,
   // Keep watching the page after the first pass and classify elements the site
   // adds later (ad slots that refresh every few seconds, lazy-loaded units).
   watchDom: true,
@@ -38,6 +44,16 @@ export const DEFAULT_SETTINGS = {
   maxTextShare: 0.5,
   // Hostnames where the extension stays idle.
   disabledSites: [],
+  // Never touch anything inside these elements, per site ("hostname selector"
+  // per line on the options page). YouTube's video player is protected because
+  // the in-video ad UI (skip button, countdown) got classified as an ad and
+  // removed, which left the ad unskippable.
+  protectedSelectors: [
+    "youtube.com #movie_player",
+    "youtube.com .html5-video-player",
+    "youtube.com ytd-player",
+    "youtube.com .ytp-ad-module",
+  ],
   model: "jev-latest",
   // jev's System One endpoint; only change this to point at a proxy or a test double.
   apiUrl: "https://api.typesafe.ai/v1/systemone",

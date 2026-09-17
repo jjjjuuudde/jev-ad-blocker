@@ -46,14 +46,18 @@
       <input type="number" id="maxElements" min="0" step="50" />
     </label>
     <label>Elements per request
-      <small>Each element is one question in a single jev call; more per request means fewer round trips.</small>
-      <input type="number" id="batchSize" min="1" max="100" />
+      <small>Each element is one question in a single jev call. jev answers 400 in about a second, and its rate limit (1,200 a minute) counts requests, so bigger is better.</small>
+      <input type="number" id="batchSize" min="1" max="400" />
     </label>
     <label>Requests in flight
       <input type="number" id="concurrency" min="1" max="8" />
     </label>
     <label>Model
       <input type="text" id="model" />
+    </label>
+    <label>Reuse confident "not an ad" verdicts for this many minutes
+      <small>An element jev scored below 0.2 is skipped on repeat pages for this long. A clean nav bar is still clean a minute later; most of a repeat page is exactly that. 0 turns it off.</small>
+      <input type="number" id="cleanCacheMinutes" min="0" max="1440" step="5" />
     </label>
     <label>Reuse verdicts for this many days
       <small>0 (default) asks jev fresh on every page load; a load costs a fraction of a cent. Set a number of days to reuse an element's verdict across reloads instead.</small>
@@ -88,6 +92,10 @@
     </label>
     <label>Disabled on these sites (one hostname per line)
       <textarea id="disabledSites" rows="4"></textarea>
+    </label>
+    <label>Never touch these elements (one <code>hostname selector</code> per line)
+      <small>Elements inside a match are never classified or removed. The defaults protect YouTube's video player, whose in-video ad controls (skip button, countdown) otherwise get removed, leaving the ad unskippable. A hostname also covers its subdomains.</small>
+      <textarea id="protectedSelectors" rows="5"></textarea>
     </label>
     <label><input type="checkbox" id="debug" /> Log every element and verdict to the page console</label>
     <label><input type="checkbox" id="enabled" /> Extension enabled</label>

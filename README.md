@@ -33,7 +33,7 @@ Whenever you change the key or pull new code, run `npm run sync-key` again and c
 
 ## How it decides
 
-Each element becomes one [noul](https://docs.typesafe.ai/primitives/noul) question ("is `state.elements.e12` an advertisement an ad blocker should remove?") with explicit true/false criteria, and 25 of them ride in a single request as a [fan-out](https://docs.typesafe.ai/patterns/fan-out). A noul answer is the probability the answer is yes; by default an element is removed when that probability is at least **0.85** (jev's own suggested line for acting without a human in the loop is 0.9; the default sits a little below it because a removal is restorable). Every page load classifies fresh by default; set **Reuse verdicts** to a number of days on the options page to cache verdicts across reloads instead.
+Each element becomes one [noul](https://docs.typesafe.ai/primitives/noul) question ("is `state.elements.e12` an advertisement an ad blocker should remove?") with explicit true/false criteria, and 200 of them ride in a single request as a [fan-out](https://docs.typesafe.ai/patterns/fan-out). A noul answer is the probability the answer is yes; by default an element is removed when that probability is at least **0.85** (jev's own suggested line for acting without a human in the loop is 0.9; the default sits a little below it because a removal is restorable). Every page load classifies fresh by default; set **Reuse verdicts** to a number of days on the options page to cache verdicts across reloads instead.
 
 Defaults (all adjustable on the options page):
 
@@ -41,24 +41,39 @@ Defaults (all adjustable on the options page):
 | --- | --- | --- |
 | Threshold | 0.85 | a little under jev's 0.9 "proceed automatically" line |
 | Reuse verdicts | 0 days | every load asks jev fresh; a load costs a fraction of a cent |
+| Reuse clean verdicts | 60 min | confident "not an ad" (p < 0.2) verdicts are reused on repeat pages |
 | Keep watching after load | on | classifies elements the site adds later (refreshing ad slots) |
 | Remove empty wrappers | on | takes out the ad's container once it has no text or media left |
 | Max elements per load | 0 (no cap) | every rendered element goes to jev; set a number to stop early on huge pages |
-| Elements per request | 25 | one request, 25 questions |
+| Elements per request | 200 | jev answers 400 in ~1 s; its 1,200/min limit counts requests |
 | Requests in flight | 6 | jev allows 1,200 requests a minute |
 | Action | remove (restorable) | "hide" and "outline" (testing: red border, keeps the ad) are available |
 | Only classify what is on screen | on | elements are classified as they scroll into view |
 | Text-share safety rail | 50% | never removes an element holding more than half the page's text |
+| Protected elements | YouTube's player | `hostname selector` lines; nothing inside a match is classified or removed |
 
 Elements are taken in document order. By default only the ones intersecting the viewport (plus a 10% margin) are sent on load; the rest are classified as they scroll into view, so a long page costs only what you actually look at. Turn **Only classify what is on screen** off to do the whole page at once (a busy news page is a few thousand elements, roughly 100 requests). Anything not rendered (`display: none`, zero rects), `script`/`style`/`head` and SVG internals are skipped. When a parent is removed, its children are dropped from later batches instead of being classified.
+
+## Staying under the rate limit
+
+jev allows 1,200 requests a minute and 250,000 tokens a second; requests are the tight one. Four things keep the count down:
+
+- **Big batches.** 200 questions per request by default (jev answers 400 in about a second, no slower than 100).
+- **Candidate filter.** Text-level elements (`span`, `p`, headings, list items, ...), text-only leaves, anything under 20 px, and wrappers whose only child fills the same box are never sent; the container around them is. Anything with an ad hint, media, an iframe or a link is always sent. On a YouTube page this cuts the questions by well over half.
+- **Rate limiter.** The worker runs one token bucket (15 requests a second) across every tab and honours jev's `Retry-After` on a 429, so retries don't pile up.
+- **Clean cache.** A confident "not an ad" verdict (p < 0.2) is reused for 60 minutes; navigating within a single-page site only sends the new elements.
 
 ## When it runs
 
 The first pass starts as soon as the DOM is parsed (Chrome's `document_idle`), not at the window `load` event, which on heavy pages can be many seconds away. Within a pass, elements that look like ads (ad attributes, iframes, off-site links or images) are sent first, so they usually go in the first round trip. Elements that render later are picked up by the DOM watcher (added nodes, 250 ms debounce), a scroll listener in capture phase (so inner scroll containers count too), a ResizeObserver on `<body>` (layout changes without a DOM change, such as an ad slot growing when its iframe loads), and settle sweeps at 0, 1 and 3 seconds after `load`. Pages Chrome prerendered wait until they become the real page; pages restored from the back/forward cache get a fresh full pass.
 
+## Protected elements
+
+Some things jev calls ads must stay: YouTube's in-video ad UI (skip button, countdown, "Ad" badge) is part of the ad, and removing it leaves the ad running with no way to skip it. The **Never touch these elements** list on the options page holds `hostname selector` lines; elements inside a match are neither classified nor removed. The defaults cover YouTube's player (`#movie_player`, `.html5-video-player`, `ytd-player`, `.ytp-ad-module`). Removing the video ad itself is a separate problem for later: it plays inside the same `<video>` element as the content.
+
 ## Single-page sites
 
-Sites like YouTube swap the page without a load event. The content script watches the URL (popstate, hashchange, and a poll for pushState) and treats a change as a new page: a full rescan runs 800 ms after the URL settles. A rescan asked for while a pass is running waits and runs right after it.
+Sites like YouTube swap the page without a load event. The content script watches the URL (popstate, hashchange, and a poll for pushState) and, 800 ms after it settles, sweeps the viewport for elements not yet classified. It is not a full rescan: the header and sidebar that survive the navigation keep their verdicts, and the new content arrives as added nodes, which the watcher classifies anyway. The popup's **Rescan page** button is the full, from-scratch pass.
 
 ## After load
 

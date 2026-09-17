@@ -1,10 +1,17 @@
 // Service worker: owns the API key, talks to jev, caches verdicts, keeps per-tab stats.
-import { classifyBatch, hashString } from "./jev.js";
+import { classifyBatch, hashString, makeLimiter } from "./jev.js";
 import { getSettings, getApiKey, getSyncedKey } from "./settings.js";
 
 const CACHE_KEY = "verdictCache";
 const DAY_MS = 24 * 60 * 60 * 1000;
-const CACHE_MAX = 3000;
+const CACHE_MAX = 20000; // entries; ~50 bytes each, well under storage.local's 10 MB
+const MINUTE_MS = 60 * 1000;
+const CLEAN_P = 0.2; // verdicts below this count as "confidently not an ad" for the short cache
+
+// jev allows 1,200 requests/minute. Fifteen a second across every tab keeps a
+// margin for retries; jev's Retry-After (on 429) pauses the bucket.
+const limiter = makeLimiter({ perSecond: 15, burst: 15 });
+const limitedFetch = limiter.limited(globalThis.fetch.bind(globalThis));
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== "string") return false;
@@ -33,23 +40,28 @@ const handlers = {
     const apiKey = await getApiKey();
     if (!apiKey) throw new Error("No jev API key. Paste it into .env and run `npm run sync-key`, or set it on the options page.");
 
-    // Verdicts are only reused when the user opted in (cacheDays > 0); by
-    // default every page load asks jev fresh.
-    const ttl = (Number(settings.cacheDays) || 0) * DAY_MS;
-    const cache = ttl > 0 ? await loadCache() : null;
+    // Two reuse windows: any verdict for cacheDays (off by default), and a
+    // confident "not an ad" verdict for cleanCacheMinutes (on by default).
+    const anyTtl = (Number(settings.cacheDays) || 0) * DAY_MS;
+    const cleanTtl = (Number(settings.cleanCacheMinutes) || 0) * MINUTE_MS;
+    const cache = anyTtl > 0 || cleanTtl > 0 ? await loadCache() : null;
     const now = Date.now();
     const probabilities = {};
     const pending = [];
     for (const el of msg.elements) {
       const hit = cache && cache[el.sig];
-      if (hit && now - hit.t < ttl) probabilities[el.id] = hit.p;
+      const age = hit ? now - hit.t : Infinity;
+      if (hit && (age < anyTtl || (hit.p < CLEAN_P && age < cleanTtl))) probabilities[el.id] = hit.p;
       else pending.push(el);
     }
     const cachedCount = msg.elements.length - pending.length;
 
     let usage = null;
     if (pending.length) {
-      const res = await classifyBatch({ apiKey, page: msg.page, elements: pending, model: settings.model, apiUrl: settings.apiUrl });
+      const res = await classifyBatch(
+        { apiKey, page: msg.page, elements: pending, model: settings.model, apiUrl: settings.apiUrl },
+        { fetchImpl: limitedFetch }
+      );
       usage = res.usage;
       for (const el of pending) {
         const p = res.probabilities[el.id];

@@ -1,7 +1,7 @@
 import { DEFAULT_SETTINGS, getSettings, saveSettings, getSyncedKey } from "./settings.js";
 
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["threshold", "maxElements", "batchSize", "concurrency", "model", "cacheDays", "action", "maxTextShare", "viewportOnly", "screenshots", "watchDom", "collapseEmptyWrappers", "debug", "enabled"];
+const FIELDS = ["threshold", "maxElements", "batchSize", "concurrency", "model", "cacheDays", "cleanCacheMinutes", "action", "maxTextShare", "viewportOnly", "screenshots", "watchDom", "collapseEmptyWrappers", "debug", "enabled"];
 
 async function load() {
   const s = await getSettings();
@@ -11,6 +11,7 @@ async function load() {
     else el.value = s[f];
   }
   $("disabledSites").value = s.disabledSites.join("\n");
+  $("protectedSelectors").value = s.protectedSelectors.join("\n");
   await describeKey();
 }
 
@@ -31,11 +32,13 @@ function read() {
     else s[f] = el.value.trim();
   }
   s.disabledSites = $("disabledSites").value.split(/\n/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+  s.protectedSelectors = $("protectedSelectors").value.split(/\n/).map((x) => x.trim()).filter(Boolean);
   if (!(s.threshold >= 0 && s.threshold <= 1)) s.threshold = DEFAULT_SETTINGS.threshold;
   if (!(s.batchSize >= 1)) s.batchSize = DEFAULT_SETTINGS.batchSize;
   if (!(s.concurrency >= 1)) s.concurrency = DEFAULT_SETTINGS.concurrency;
   if (!(s.maxElements >= 0)) s.maxElements = DEFAULT_SETTINGS.maxElements;
   if (!(s.cacheDays >= 0)) s.cacheDays = DEFAULT_SETTINGS.cacheDays;
+  if (!(s.cleanCacheMinutes >= 0)) s.cleanCacheMinutes = DEFAULT_SETTINGS.cleanCacheMinutes;
   if (!(s.maxTextShare > 0 && s.maxTextShare <= 1)) s.maxTextShare = DEFAULT_SETTINGS.maxTextShare;
   if (!s.model) s.model = DEFAULT_SETTINGS.model;
   return s;

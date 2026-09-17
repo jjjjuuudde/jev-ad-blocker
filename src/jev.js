@@ -155,6 +155,47 @@ function trim(s) { return String(s || "").slice(0, 300); }
 async function safeText(res) { try { return await res.text(); } catch { return ""; } }
 function defaultSleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
+/**
+ * Token-bucket rate limiter shared by every request the worker sends, so many
+ * tabs together stay under jev's 1,200 requests/minute. `acquire()` resolves
+ * when a request may go; `pause(ms)` holds everything (used on 429 with
+ * Retry-After). Wrap fetch with `limited(fetchImpl)` to apply it to retries too.
+ */
+export function makeLimiter({ perSecond = 15, burst = perSecond, now = Date.now, sleep = defaultSleep } = {}) {
+  let tokens = burst;
+  let last = now();
+  let pausedUntil = 0;
+  const refill = () => {
+    const t = now();
+    tokens = Math.min(burst, tokens + ((t - last) / 1000) * perSecond);
+    last = t;
+  };
+  const limiter = {
+    async acquire() {
+      for (;;) {
+        const t = now();
+        if (t < pausedUntil) { await sleep(pausedUntil - t); continue; }
+        refill();
+        if (tokens >= 1) { tokens -= 1; return; }
+        await sleep(Math.ceil(((1 - tokens) / perSecond) * 1000));
+      }
+    },
+    pause(ms) { pausedUntil = Math.max(pausedUntil, now() + ms); },
+    limited(fetchImpl) {
+      return async (url, init) => {
+        await limiter.acquire();
+        const res = await fetchImpl(url, init);
+        if (res && res.status === 429) {
+          const ra = Number(res.headers && res.headers.get && res.headers.get("retry-after"));
+          limiter.pause(Number.isFinite(ra) && ra > 0 ? ra * 1000 : 2000);
+        }
+        return res;
+      };
+    },
+  };
+  return limiter;
+}
+
 /** Cheap, stable string hash for the verdict cache (FNV-1a, 32-bit, hex). */
 export function hashString(str) {
   let h = 0x811c9dc5;
