@@ -1,7 +1,9 @@
 // Content script: walks every rendered element on the page, describes each one,
 // ships the descriptions to the worker (which asks jev), and removes the
-// elements jev is confident are ads. Runs once at page load; the popup can
-// trigger a rescan or restore what was removed.
+// elements jev is confident are ads. Runs once at page load, then keeps
+// watching the DOM so elements the site adds later (refreshing ad slots,
+// lazy-loaded units) get classified too. The popup can trigger a full rescan
+// or restore what was removed.
 (() => {
   if (window.__jevAdBlocker) return;
   window.__jevAdBlocker = true;
@@ -12,8 +14,11 @@
     "source", "track", "area", "map", "datalist", "slot",
   ]);
   const HINT_RE = /\b(ad|ads|advert|advertis|adsbygoogle|sponsor|promo|promoted|banner|doubleclick|googlesyndication|taboola|outbrain|adnxs|criteo|amazon-adsystem|mgid|revcontent|native)\b|_ad_|-ad-|\bad[-_]?(slot|unit|wrapper|container|box|frame)/i;
+  // Tags that count as "real content" when deciding whether a wrapper is empty.
+  const MEDIA_TAGS = new Set(["img", "iframe", "video", "audio", "canvas", "picture", "object", "embed", "input", "select", "textarea"]);
   const MAX_TEXT = 200;
   const MAX_ATTR = 120;
+  const WATCH_DEBOUNCE_MS = 600;
 
   const state = {
     status: "idle",
@@ -22,15 +27,23 @@
     site: location.hostname,
     totalElements: 0,
     scanned: 0,
+    late: 0,       // elements classified after the initial pass (added by the site later)
     cached: 0,
     requests: 0,
-    removed: [],   // { id, summary, p, action }
+    removed: [],   // { id, summary, p, action }  (p is null for a collapsed wrapper)
     skipped: [],   // confident verdicts we refused to act on, with reason
     errors: [],
     usage: { input_tokens: 0, output_tokens: 0 },
   };
-  const records = []; // { el, parent, next, prevDisplay, action }
+  const records = [];            // { el, parent, next, prevDisplay, action }
+  const takenOut = new Set();    // elements we removed or hid (for the empty-wrapper check)
+  let seen = new WeakSet();      // elements already classified in this page's lifetime
   let running = false;
+  let paused = false;            // after "restore": leave the page alone until a rescan
+  let nextId = 0;
+  let observer = null;
+  let pendingRoots = new Set();
+  let watchTimer = 0;
 
   // ---------- messaging ----------
 
@@ -72,73 +85,51 @@
     try { await send({ type: "report", stats: snapshot() }); } catch { /* worker unavailable */ }
   }
 
-  // ---------- main pass ----------
+  // ---------- passes ----------
 
+  // Fetch settings and decide whether we should do anything on this page.
+  async function prepare() {
+    const cfg = await send({ type: "getConfig" });
+    const settings = cfg.settings;
+    if (!settings.enabled || settings.disabledSites.includes(location.hostname)) {
+      state.status = "disabled";
+      stopWatching();
+      return null;
+    }
+    if (!cfg.hasKey) {
+      state.status = "no-key";
+      state.errors.push("No jev API key configured");
+      return null;
+    }
+    const page = { url: location.href, title: document.title, viewport: { w: innerWidth, h: innerHeight } };
+    return { settings, page };
+  }
+
+  // Full pass over the whole page (page load, or "Rescan" from the popup).
   async function run(reason) {
     if (running) return;
     running = true;
+    paused = false;
+    seen = new WeakSet();
     state.status = "scanning";
     state.startedAt = Date.now();
     state.finishedAt = 0;
     state.errors = [];
     state.scanned = 0;
+    state.late = 0;
     state.cached = 0;
     state.requests = 0;
     state.usage = { input_tokens: 0, output_tokens: 0 };
     try {
-      const cfg = await send({ type: "getConfig" });
-      const settings = cfg.settings;
-      if (!settings.enabled || settings.disabledSites.includes(location.hostname)) {
-        state.status = "disabled";
-        return;
-      }
-      if (!cfg.hasKey) {
-        state.status = "no-key";
-        state.errors.push("No jev API key configured");
-        return;
-      }
-
-      const page = { url: location.href, title: document.title, viewport: { w: innerWidth, h: innerHeight } };
-      const candidates = collect(settings);
+      const ctx = await prepare();
+      if (!ctx) return;
+      // Watch from the start so nodes the site adds during the pass are queued
+      // (they run as an incremental pass once this one finishes).
+      if (ctx.settings.watchDom) startWatching(); else stopWatching();
+      const candidates = collect(ctx.settings, [document.body]);
       state.totalElements = candidates.total;
-      const items = candidates.items;
-      if (settings.debug) console.log(`[jev-ad] ${reason}: ${items.length} of ${candidates.total} elements to classify`, items);
-
-      const batches = [];
-      for (let i = 0; i < items.length; i += settings.batchSize) batches.push(items.slice(i, i + settings.batchSize));
-
-      let cursor = 0;
-      const worker = async () => {
-        while (cursor < batches.length) {
-          // Elements inside something already removed are gone; don't pay to classify them.
-          const batch = batches[cursor++].filter((it) => it.el.isConnected);
-          if (!batch.length) continue;
-          try {
-            const res = await send({
-              type: "classify",
-              page,
-              elements: batch.map((it) => ({ id: it.id, desc: it.desc, sig: it.sig })),
-            });
-            state.requests += 1;
-            state.cached += res.cached || 0;
-            state.scanned += batch.length;
-            if (res.usage) {
-              state.usage.input_tokens += res.usage.input_tokens || 0;
-              state.usage.output_tokens += res.usage.output_tokens || 0;
-            }
-            for (const it of batch) {
-              const p = res.probabilities[it.id] ?? 0;
-              if (settings.debug) console.log(`[jev-ad] ${p.toFixed(3)} ${it.summary}`, it.el);
-              if (p >= settings.threshold) act(it, p, settings, candidates.textTotal);
-            }
-          } catch (err) {
-            state.errors.push(err.message || String(err));
-            if (settings.debug) console.warn("[jev-ad] batch failed", err);
-            if (/API key|401/.test(err.message || "")) cursor = batches.length; // no point continuing
-          }
-        }
-      };
-      await Promise.all(Array.from({ length: Math.max(1, settings.concurrency) }, worker));
+      if (ctx.settings.debug) console.log(`[jev-ad] ${reason}: ${candidates.items.length} of ${candidates.total} elements to classify`, candidates.items);
+      await classifyAll(ctx, candidates);
       state.status = "done";
     } catch (err) {
       state.status = "error";
@@ -147,33 +138,136 @@
       state.finishedAt = Date.now();
       running = false;
       await report();
+      if (pendingRoots.size) scheduleIncremental();
     }
+  }
+
+  // Incremental pass over subtrees the site added after the initial pass.
+  async function runIncremental() {
+    if (running || paused) return;
+    const roots = [...pendingRoots].filter((el) => el.isConnected && !seen.has(el));
+    pendingRoots = new Set();
+    if (!roots.length) return;
+    running = true;
+    state.status = "scanning";
+    try {
+      const ctx = await prepare();
+      if (!ctx) return;
+      const candidates = collect(ctx.settings, roots);
+      state.totalElements = candidates.total;
+      state.late += candidates.items.length;
+      if (ctx.settings.debug) console.log(`[jev-ad] dom change: ${candidates.items.length} new elements to classify`, candidates.items);
+      await classifyAll(ctx, candidates);
+      state.status = "done";
+    } catch (err) {
+      state.status = "error";
+      state.errors.push(err.message || String(err));
+    } finally {
+      state.finishedAt = Date.now();
+      running = false;
+      await report();
+      if (pendingRoots.size) scheduleIncremental();
+    }
+  }
+
+  async function classifyAll({ settings, page }, candidates) {
+    const items = candidates.items;
+    const batches = [];
+    for (let i = 0; i < items.length; i += settings.batchSize) batches.push(items.slice(i, i + settings.batchSize));
+
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < batches.length) {
+        // Elements inside something already removed are gone; don't pay to classify them.
+        const batch = batches[cursor++].filter((it) => it.el.isConnected);
+        if (!batch.length) continue;
+        try {
+          const res = await send({
+            type: "classify",
+            page,
+            elements: batch.map((it) => ({ id: it.id, desc: it.desc, sig: it.sig })),
+          });
+          state.requests += 1;
+          state.cached += res.cached || 0;
+          state.scanned += batch.length;
+          if (res.usage) {
+            state.usage.input_tokens += res.usage.input_tokens || 0;
+            state.usage.output_tokens += res.usage.output_tokens || 0;
+          }
+          for (const it of batch) {
+            const p = res.probabilities[it.id] ?? 0;
+            if (settings.debug) console.log(`[jev-ad] ${p.toFixed(3)} ${it.summary}`, it.el);
+            if (p >= settings.threshold) act(it, p, settings, candidates.textTotal);
+          }
+        } catch (err) {
+          state.errors.push(err.message || String(err));
+          if (settings.debug) console.warn("[jev-ad] batch failed", err);
+          if (/API key|401/.test(err.message || "")) cursor = batches.length; // no point continuing
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, settings.concurrency) }, worker));
+  }
+
+  // ---------- watching for elements added after load ----------
+
+  function startWatching() {
+    if (observer || !document.body) return;
+    observer = new MutationObserver((mutations) => {
+      if (paused) return;
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          if (node.nodeType === 1 && !seen.has(node) && !takenOut.has(node)) pendingRoots.add(node);
+        }
+      }
+      if (pendingRoots.size) scheduleIncremental();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function stopWatching() {
+    if (observer) observer.disconnect();
+    observer = null;
+    pendingRoots = new Set();
+    clearTimeout(watchTimer);
+    watchTimer = 0;
+  }
+
+  // Sites often add an ad in several steps (wrapper, then iframe, then its
+  // contents); wait for the burst to settle before classifying.
+  function scheduleIncremental() {
+    clearTimeout(watchTimer);
+    watchTimer = setTimeout(() => { watchTimer = 0; runIncremental().catch(() => {}); }, WATCH_DEBOUNCE_MS);
   }
 
   // ---------- element collection ----------
 
-  function collect(settings) {
-    const all = document.body ? document.body.querySelectorAll("*") : [];
+  function collect(settings, roots) {
+    const total = document.body ? document.body.querySelectorAll("*").length : 0;
     const textTotal = document.body ? normText(document.body.textContent).length : 0;
     const items = [];
-    let idx = 0;
-    const alreadyGone = new Set(records.map((r) => r.el));
-    for (const el of all) {
-      if (settings.maxElements > 0 && items.length >= settings.maxElements) break;
-      if (shouldSkip(el, alreadyGone)) continue;
-      const desc = describe(el);
-      const id = `e${idx++}`;
-      items.push({ el, id, desc, sig: signature(desc), summary: summarize(el, desc) });
+    for (const root of roots) {
+      if (!root || !root.isConnected) continue;
+      const list = root === document.body ? root.querySelectorAll("*") : [root, ...root.querySelectorAll("*")];
+      for (const el of list) {
+        if (settings.maxElements > 0 && items.length >= settings.maxElements) break;
+        if (seen.has(el)) continue;
+        seen.add(el);
+        if (shouldSkip(el)) continue;
+        const desc = describe(el);
+        const id = `e${nextId++}`;
+        items.push({ el, id, desc, sig: signature(desc), summary: summarize(el, desc) });
+      }
     }
-    return { items, total: all.length, textTotal };
+    return { items, total, textTotal };
   }
 
-  function shouldSkip(el, alreadyGone) {
+  function shouldSkip(el) {
     const tag = el.tagName.toLowerCase();
     if (SKIP_TAGS.has(tag)) return true;
     if (el.namespaceURI !== "http://www.w3.org/1999/xhtml" && tag !== "svg") return true; // svg internals, MathML
     if (tag !== "svg" && el.closest("svg")) return true;
-    if (alreadyGone.has(el)) return true;
+    if (takenOut.has(el)) return true;
     if (!el.isConnected) return true;
     if (el.getClientRects().length === 0) return true; // display:none or otherwise not rendered
     return false;
@@ -273,17 +367,61 @@
       state.skipped.push({ id: item.id, summary: item.summary, p, reason: `holds ${Math.round((ownText / textTotal) * 100)}% of the page text` });
       return;
     }
-    const rec = { el, parent: el.parentNode, next: el.nextSibling, prevDisplay: el.style.display, action: settings.action };
-    if (settings.action === "hide") {
+    const parent = el.parentElement;
+    takeOut(el, settings.action);
+    state.removed.push({ id: item.id, summary: item.summary, p: Number(p.toFixed(3)), action: settings.action });
+    if (settings.collapseEmptyWrappers) collapseEmptyAncestors(parent, settings.action);
+  }
+
+  // Remove or hide one element, remembering enough to put it back.
+  function takeOut(el, action) {
+    const rec = { el, parent: el.parentNode, next: el.nextSibling, prevDisplay: el.style.display, action };
+    if (action === "hide") {
       el.style.setProperty("display", "none", "important");
     } else {
       el.remove();
     }
     records.push(rec);
-    state.removed.push({ id: item.id, summary: item.summary, p: Number(p.toFixed(3)), action: settings.action });
+    takenOut.add(el);
+  }
+
+  // An ad usually sits in a wrapper the site styled (fixed bar, grey box,
+  // reserved height). Once the ad is gone, a wrapper with no text or media of
+  // its own is just that empty box, so take it out too, walking upward until
+  // we hit something that still has content. A removed wrapper also stops a
+  // refreshing ad slot: the site's script re-inserts into a detached node.
+  function collapseEmptyAncestors(start, action) {
+    let p = start;
+    while (p && p !== document.body && p !== document.documentElement && p.isConnected) {
+      if (hasContent(p)) break;
+      const next = p.parentElement;
+      takeOut(p, action);
+      state.removed.push({ id: "", summary: `${shortName(p)} (empty wrapper)`, p: null, action });
+      p = next;
+    }
+  }
+
+  // True if the node still holds visible text or media, ignoring what we hid.
+  function hasContent(node) {
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3) {
+        if (child.nodeValue.trim()) return true;
+        continue;
+      }
+      if (child.nodeType !== 1 || takenOut.has(child)) continue;
+      const tag = child.tagName.toLowerCase();
+      if (tag === "script" || tag === "style" || tag === "template" || tag === "noscript") continue;
+      if (MEDIA_TAGS.has(tag) && child.getClientRects().length > 0) return true;
+      if (hasContent(child)) return true;
+    }
+    return false;
   }
 
   function restoreAll() {
+    // Pause watching first, so the elements we put back aren't classified again
+    // (the cache would just remove them a second later).
+    paused = true;
+    if (observer) observer.disconnect();
     for (const rec of records.reverse()) {
       try {
         if (rec.action === "hide") {
@@ -295,8 +433,11 @@
       } catch { /* node is gone for good */ }
     }
     records.length = 0;
+    takenOut.clear();
+    pendingRoots = new Set();
     state.removed = [];
     state.skipped = [];
+    if (observer && document.body) observer.observe(document.body, { childList: true, subtree: true });
     report();
   }
 

@@ -1,4 +1,5 @@
 import { getSettings, saveSettings } from "./settings.js";
+import { costUsd, formatUsd } from "./jev.js";
 
 const $ = (id) => document.getElementById(id);
 let tab = null;
@@ -40,15 +41,16 @@ function render(s) {
     error: "Failed",
   };
   $("status").innerHTML = `<span>${labels[s.status] || s.status}</span><span>${s.requests} request${s.requests === 1 ? "" : "s"}</span>`;
-  const capped = s.totalElements > s.scanned && s.status === "done";
+  const capped = s.totalElements > s.scanned && s.status === "done" && !s.late;
   $("counts").textContent =
     `${s.scanned} element${s.scanned === 1 ? "" : "s"} classified` +
     (s.cached ? ` (${s.cached} from cache)` : "") +
+    (s.late ? ` (${s.late} added after load)` : "") +
     ` of ${s.totalElements} on the page` +
     (capped ? " (capped, raise the limit in options)" : "") +
     `. ${s.removed.length} removed.`;
   $("errors").textContent = s.errors.length ? s.errors.join("\n") : "";
-  $("usage").textContent = s.usage && s.usage.input_tokens ? `${fmt(s.usage.input_tokens)} in / ${fmt(s.usage.output_tokens)} out tokens` : "";
+  renderCost(s.usage);
 
   const wrap = $("removedWrap");
   wrap.innerHTML = "";
@@ -56,7 +58,7 @@ function render(s) {
     const ul = document.createElement("ul");
     for (const r of s.removed) {
       const li = document.createElement("li");
-      li.innerHTML = `<b>${(r.p * 100).toFixed(0)}%</b> `;
+      li.innerHTML = r.p == null ? `<b>wrap</b> ` : `<b>${(r.p * 100).toFixed(0)}%</b> `;
       li.append(document.createTextNode(r.summary));
       ul.append(li);
     }
@@ -98,6 +100,23 @@ function askTab(msg) {
     chrome.tabs.sendMessage(tab.id, msg, (res) => resolve(chrome.runtime.lastError ? null : res));
   });
 }
-function fmt(n) { return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n); }
+// This page's spend, plus the lifetime total the worker keeps across all pages.
+async function renderCost(usage) {
+  const pageTokens = usage ? usage.input_tokens || 0 : 0;
+  const page = pageTokens ? `This page: ${formatUsd(costUsd(usage))} (${fmt(pageTokens)} tokens)` : "This page: $0";
+  const res = await ask({ type: "getUsageTotal" });
+  const total = res && res.total;
+  const all = total && total.input_tokens
+    ? `All time: ${formatUsd(costUsd(total))} over ${fmt(total.requests)} request${total.requests === 1 ? "" : "s"} since ${new Date(total.since).toLocaleDateString()}`
+    : "All time: $0";
+  $("cost").innerHTML = "";
+  for (const line of [page, all]) {
+    const div = document.createElement("div");
+    div.textContent = line;
+    $("cost").append(div);
+  }
+}
+
+function fmt(n) { return n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n); }
 
 init();

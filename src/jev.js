@@ -10,6 +10,26 @@
 export const API_URL = "https://api.typesafe.ai/v1/systemone";
 export const DEFAULT_MODEL = "jev-latest";
 
+// List price from https://docs.typesafe.ai/models: $0.042 per million input
+// tokens, output tokens free. The API reports token counts, not dollars, so
+// cost is computed client-side from these.
+export const PRICING = { inputUsdPerMTok: 0.042, outputUsdPerMTok: 0 };
+
+/** Dollars for a usage object ({ input_tokens, output_tokens }); 0 for null. */
+export function costUsd(usage, pricing = PRICING) {
+  if (!usage) return 0;
+  const inp = Number(usage.input_tokens) || 0;
+  const out = Number(usage.output_tokens) || 0;
+  return (inp * pricing.inputUsdPerMTok + out * pricing.outputUsdPerMTok) / 1e6;
+}
+
+/** "$0.0021" style string; very small amounts show as "<$0.0001". */
+export function formatUsd(usd) {
+  if (!(usd > 0)) return "$0";
+  if (usd < 0.0001) return "<$0.0001";
+  return `$${usd.toFixed(usd < 0.01 ? 4 : usd < 1 ? 3 : 2)}`;
+}
+
 export const AD_CRITERIA = {
   true:
     "The element is, or is the dedicated container of, a paid advertisement: " +

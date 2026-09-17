@@ -2,9 +2,10 @@
 
 export const DEFAULT_SETTINGS = {
   enabled: true,
-  // A noul answer is P(yes). "Confident" per jev's guidance is 0.9+ for actions
-  // that are costly to get wrong (https://docs.typesafe.ai/confidence).
-  threshold: 0.9,
+  // A noul answer is P(yes). jev suggests 0.9+ for acting without a human in
+  // the loop (https://docs.typesafe.ai/confidence); 0.85 trades a little of
+  // that margin for catching more ads, since a removal is restorable.
+  threshold: 0.85,
   // Elements are walked in document order; scanning stops after this many
   // rendered elements per page load. 0 = no cap: every rendered element goes to jev.
   maxElements: 0,
@@ -14,6 +15,16 @@ export const DEFAULT_SETTINGS = {
   concurrency: 3,
   // "remove" detaches the node (restorable from the popup), "hide" sets display:none.
   action: "remove",
+  // Reuse a verdict for this many days instead of asking jev again. 0 means
+  // every page load classifies fresh: a load costs a fraction of a cent, and
+  // fresh verdicts follow the page as it changes.
+  cacheDays: 0,
+  // Keep watching the page after the first pass and classify elements the site
+  // adds later (ad slots that refresh every few seconds, lazy-loaded units).
+  watchDom: true,
+  // After removing an ad, also remove any ancestor left with no text or media
+  // of its own, so an ad wrapper doesn't stay behind as an empty grey box.
+  collapseEmptyWrappers: true,
   // Safety rail: never remove an element holding more than this share of the
   // page's visible text, so a wrongly-flagged wrapper can't blank the page.
   maxTextShare: 0.5,

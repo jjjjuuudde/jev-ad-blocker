@@ -19,6 +19,7 @@
     a { color: inherit; }
     label { display: flex; gap: 6px; align-items: center; }
     footer { margin-top: 8px; display: flex; justify-content: space-between; font-size: 12px; opacity: .8; }
+    #cost { margin-top: 8px; font-size: 12px; opacity: .8; }
   </style>
 </head>
 <body>
@@ -34,9 +35,10 @@
     <button id="restore">Restore removed</button>
   </div>
   <div id="removedWrap"></div>
+  <div id="cost" title="jev list price: $0.042 per million input tokens, output free"></div>
   <footer>
     <a href="#" id="options">Options</a>
-    <span id="usage"></span>
+    <span></span>
   </footer>
   <script type="module" src="popup.js"></script>
 </body>

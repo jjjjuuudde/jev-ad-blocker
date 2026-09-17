@@ -97,7 +97,7 @@ try {
   await sw.evaluate(async (apiUrl) => {
     await chrome.storage.local.set({
       apiKey: "test-key",
-      settings: { apiUrl, batchSize: 10, concurrency: 2, debug: true },
+      settings: { apiUrl, batchSize: 10, concurrency: 2, debug: true, cacheDays: 7 }, // cacheDays: the reload assertion below needs the cache on
     });
   }, `${base}/v1/systemone`);
 
@@ -153,7 +153,53 @@ try {
   assert.equal(await page.locator("#ad-banner").count(), 1, "restore should bring the banner back");
   assert.equal(await page.locator("#ad-frame").count(), 1);
 
-  console.log(`e2e ok: ${stats.scanned} elements over ${stats.requests} requests (${seen.questions} questions), removed ${stats2.removed.length}, reload served ${stats2.cached} from cache, restore worked.`);
+  // Restore pauses the DOM watcher; a rescan starts it again.
+  const tabId = await sw.evaluate(async () => {
+    const all = await chrome.storage.session.get(null);
+    return Number(Object.keys(all).find((k) => k.startsWith("tab:")).slice(4));
+  });
+  await sw.evaluate((id) => chrome.tabs.sendMessage(id, { type: "rescan" }), tabId);
+  const waitDone = (pred) => sw.evaluate(async ([id, src]) => {
+    const pred = new Function("s", `return (${src})(s)`);
+    for (let i = 0; i < 100; i++) {
+      const s = (await chrome.storage.session.get(`tab:${id}`))[`tab:${id}`];
+      if (s && s.status === "done" && pred(s)) return s;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error("timed out waiting for the content script");
+  }, [tabId, pred.toString()]);
+  await waitDone((s) => s.removed.length >= 2 && s.late === 0);
+
+  // Dynamic content: the site injects a sticky bottom bar (grey, no text of its
+  // own) holding an ad, and swaps the ad every 300ms the way a refreshing slot
+  // does. The ad must go, the bar must go with it, and once the bar is off the
+  // page the refresh loop must stop reaching jev.
+  await page.evaluate(() => {
+    const bar = document.createElement("div");
+    bar.id = "sticky-bar";
+    bar.style.cssText = "position:fixed;bottom:0;left:0;width:100%;height:60px;background:#ccc";
+    const unit = () => {
+      const u = document.createElement("div");
+      u.className = "ad-unit";
+      u.setAttribute("data-ad-slot", String(Date.now()));
+      u.textContent = "Sponsored: refreshing offer";
+      return u;
+    };
+    bar.append(unit());
+    document.body.append(bar);
+    window.__refreshes = 0;
+    setInterval(() => { bar.querySelector(".ad-unit")?.remove(); bar.append(unit()); window.__refreshes++; }, 300);
+  });
+  const stats3 = await waitDone((s) => s.late > 0 && s.removed.some((r) => /sticky-bar/.test(r.summary)));
+  assert.equal(await page.locator("#sticky-bar").count(), 0, "the empty sticky bar should be collapsed along with its ad");
+  assert.ok(stats3.removed.some((r) => r.p == null && /empty wrapper/.test(r.summary)), `no wrapper entry in ${JSON.stringify(stats3.removed)}`);
+  const requestsAfterCollapse = seen.requests;
+  await page.waitForTimeout(1500);
+  assert.equal(seen.requests, requestsAfterCollapse, "refreshes into the detached bar must not reach jev");
+  assert.ok(await page.evaluate(() => window.__refreshes) >= 3, "the site's refresh loop should still be running (into the detached node)");
+  assert.equal(await page.locator("article.article p.body").count(), 2, "content must survive the dynamic pass");
+
+  console.log(`e2e ok: ${stats.scanned} elements over ${stats.requests} requests (${seen.questions} questions), removed ${stats2.removed.length}, reload served ${stats2.cached} from cache, restore worked, dynamic bar collapsed (${stats3.late} late elements).`);
 } finally {
   await context.close();
   server.close();

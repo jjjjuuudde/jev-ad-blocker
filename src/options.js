@@ -1,7 +1,7 @@
 import { DEFAULT_SETTINGS, getSettings, saveSettings, getSyncedKey } from "./settings.js";
 
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["threshold", "maxElements", "batchSize", "concurrency", "model", "action", "maxTextShare", "debug", "enabled"];
+const FIELDS = ["threshold", "maxElements", "batchSize", "concurrency", "model", "cacheDays", "action", "maxTextShare", "watchDom", "collapseEmptyWrappers", "debug", "enabled"];
 
 async function load() {
   const s = await getSettings();
@@ -35,6 +35,7 @@ function read() {
   if (!(s.batchSize >= 1)) s.batchSize = DEFAULT_SETTINGS.batchSize;
   if (!(s.concurrency >= 1)) s.concurrency = DEFAULT_SETTINGS.concurrency;
   if (!(s.maxElements >= 0)) s.maxElements = DEFAULT_SETTINGS.maxElements;
+  if (!(s.cacheDays >= 0)) s.cacheDays = DEFAULT_SETTINGS.cacheDays;
   if (!(s.maxTextShare > 0 && s.maxTextShare <= 1)) s.maxTextShare = DEFAULT_SETTINGS.maxTextShare;
   if (!s.model) s.model = DEFAULT_SETTINGS.model;
   return s;
@@ -53,6 +54,10 @@ $("reset").addEventListener("click", async () => {
 $("clearCache").addEventListener("click", async () => {
   await ask({ type: "clearCache" });
   flash("msg", "Verdict cache cleared.", true);
+});
+$("resetUsage").addEventListener("click", async () => {
+  await ask({ type: "resetUsageTotal" });
+  flash("msg", "Spend counter reset.", true);
 });
 $("saveKey").addEventListener("click", async () => {
   const key = $("apiKey").value.trim();

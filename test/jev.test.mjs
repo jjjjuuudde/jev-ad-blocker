@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildRequest, parseAnswers, classifyBatch, hashString, API_URL, JevError } from "../src/jev.js";
+import { buildRequest, parseAnswers, classifyBatch, hashString, costUsd, formatUsd, API_URL, JevError } from "../src/jev.js";
 
 const page = { url: "https://example.com/a", title: "Example" };
 const elements = [
@@ -86,4 +86,15 @@ test("hashString is stable and hex", () => {
   assert.equal(hashString("abc"), hashString("abc"));
   assert.notEqual(hashString("abc"), hashString("abd"));
   assert.match(hashString("anything"), /^[0-9a-f]{8}$/);
+});
+
+test("costUsd and formatUsd follow jev's list price ($0.042/MTok in, output free)", () => {
+  assert.equal(costUsd(null), 0);
+  assert.equal(costUsd({ input_tokens: 1_000_000, output_tokens: 1_000_000 }), 0.042);
+  assert.equal(costUsd({ input_tokens: 500_000 }), 0.021);
+  assert.equal(formatUsd(0), "$0");
+  assert.equal(formatUsd(0.00001), "<$0.0001");
+  assert.equal(formatUsd(0.0021), "$0.0021");
+  assert.equal(formatUsd(0.021), "$0.021");
+  assert.equal(formatUsd(1.5), "$1.50");
 });

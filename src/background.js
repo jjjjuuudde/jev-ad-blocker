@@ -3,7 +3,8 @@ import { classifyBatch, hashString } from "./jev.js";
 import { getSettings, getApiKey } from "./settings.js";
 
 const CACHE_KEY = "verdictCache";
-const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const USAGE_KEY = "usageTotal"; // lifetime token counts, so the popup can show total spend
+const DAY_MS = 24 * 60 * 60 * 1000;
 const CACHE_MAX = 3000;
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -29,13 +30,16 @@ const handlers = {
     const apiKey = await getApiKey();
     if (!apiKey) throw new Error("No jev API key. Paste it into .env and run `npm run sync-key`, or set it on the options page.");
 
-    const cache = await loadCache();
+    // Verdicts are only reused when the user opted in (cacheDays > 0); by
+    // default every page load asks jev fresh.
+    const ttl = (Number(settings.cacheDays) || 0) * DAY_MS;
+    const cache = ttl > 0 ? await loadCache() : null;
     const now = Date.now();
     const probabilities = {};
     const pending = [];
     for (const el of msg.elements) {
-      const hit = cache[el.sig];
-      if (hit && now - hit.t < CACHE_TTL_MS) probabilities[el.id] = hit.p;
+      const hit = cache && cache[el.sig];
+      if (hit && now - hit.t < ttl) probabilities[el.id] = hit.p;
       else pending.push(el);
     }
     const cachedCount = msg.elements.length - pending.length;
@@ -44,12 +48,13 @@ const handlers = {
     if (pending.length) {
       const res = await classifyBatch({ apiKey, page: msg.page, elements: pending, model: settings.model, apiUrl: settings.apiUrl });
       usage = res.usage;
+      await addUsage(usage);
       for (const el of pending) {
         const p = res.probabilities[el.id];
         probabilities[el.id] = p;
-        cache[el.sig] = { p, t: now };
+        if (cache) cache[el.sig] = { p, t: now };
       }
-      await saveCache(cache);
+      if (cache) await saveCache(cache);
     }
     return { probabilities, cached: cachedCount, usage };
   },
@@ -66,6 +71,15 @@ const handlers = {
     const key = `tab:${msg.tabId}`;
     const data = await chrome.storage.session.get(key);
     return { stats: data[key] || null };
+  },
+
+  async getUsageTotal() {
+    return { total: await loadUsage() };
+  },
+
+  async resetUsageTotal() {
+    await chrome.storage.local.set({ [USAGE_KEY]: emptyUsage() });
+    return {};
   },
 
   async clearCache() {
@@ -89,6 +103,25 @@ const handlers = {
     return { probability: res.probabilities.e0, model: res.model, usage: res.usage };
   },
 };
+
+function emptyUsage() { return { input_tokens: 0, output_tokens: 0, requests: 0, since: Date.now() }; }
+
+async function loadUsage() {
+  const data = await chrome.storage.local.get(USAGE_KEY);
+  return { ...emptyUsage(), ...(data[USAGE_KEY] || {}) };
+}
+
+let usageWriting = Promise.resolve();
+function addUsage(usage) {
+  usageWriting = usageWriting.then(async () => {
+    const total = await loadUsage();
+    total.input_tokens += (usage && usage.input_tokens) || 0;
+    total.output_tokens += (usage && usage.output_tokens) || 0;
+    total.requests += 1;
+    await chrome.storage.local.set({ [USAGE_KEY]: total });
+  }).catch(() => {});
+  return usageWriting;
+}
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.storage.session.remove(`tab:${tabId}`).catch(() => {});

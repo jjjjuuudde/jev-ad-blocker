@@ -38,7 +38,7 @@
   <fieldset>
     <legend>Classification</legend>
     <label>Remove when jev's probability is at least
-      <small>jev's noul answer is the probability the element is an ad. 0.9 is jev's "act automatically" line; lower it to block more aggressively.</small>
+      <small>jev's noul answer is the probability the element is an ad. jev's own "act automatically" line is 0.9; the default 0.85 blocks a little more aggressively. Lower it to block more, raise it if content disappears.</small>
       <input type="number" id="threshold" min="0.5" max="1" step="0.01" />
     </label>
     <label>Max elements per page load
@@ -55,6 +55,10 @@
     <label>Model
       <input type="text" id="model" />
     </label>
+    <label>Reuse verdicts for this many days
+      <small>0 (default) asks jev fresh on every page load; a load costs a fraction of a cent. Set a number of days to reuse an element's verdict across reloads instead.</small>
+      <input type="number" id="cacheDays" min="0" max="365" step="1" />
+    </label>
   </fieldset>
 
   <fieldset>
@@ -69,6 +73,12 @@
       <small>Stops a wrongly-flagged wrapper from blanking the page.</small>
       <input type="number" id="maxTextShare" min="0.05" max="1" step="0.05" />
     </label>
+    <label><input type="checkbox" id="watchDom" /> Keep watching after load
+      <small>Classifies elements the site adds later, such as ad slots that refresh every few seconds. Verdicts are cached, so a repeating ad costs little.</small>
+    </label>
+    <label><input type="checkbox" id="collapseEmptyWrappers" /> Remove empty wrappers left behind
+      <small>After an ad is removed, also removes any ancestor that has no text or media of its own, so the ad's grey box doesn't stay on the page.</small>
+    </label>
     <label>Disabled on these sites (one hostname per line)
       <textarea id="disabledSites" rows="4"></textarea>
     </label>
@@ -79,6 +89,7 @@
   <button id="save">Save settings</button>
   <button id="reset">Reset to defaults</button>
   <button id="clearCache">Clear verdict cache</button>
+  <button id="resetUsage">Reset spend counter</button>
   <div class="msg" id="msg"></div>
 
   <script type="module" src="options.js"></script>
