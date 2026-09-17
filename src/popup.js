@@ -18,6 +18,9 @@ async function init() {
   const cfg = await ask({ type: "getConfig" });
   if (cfg && !cfg.hasKey) {
     $("errors").textContent = "No jev API key yet. Paste it into .env and run `npm run sync-key`, or set it on the options page.";
+  } else if (cfg && cfg.keyTail) {
+    $("key").textContent = `key …${cfg.keyTail}${cfg.keySource ? ` (${cfg.keySource})` : ""}`;
+    $("key").title = "The API key the worker is sending to jev, and where it came from";
   }
   await refresh();
 }
@@ -35,21 +38,24 @@ function render(s) {
   const labels = {
     idle: "Waiting for page load",
     scanning: "Scanning...",
-    done: "Done",
+    done: "Done, watching",
     disabled: "Disabled on this site",
     "no-key": "No API key",
     error: "Failed",
   };
   $("status").innerHTML = `<span>${labels[s.status] || s.status}</span><span>${s.requests} request${s.requests === 1 ? "" : "s"}</span>`;
-  const capped = s.totalElements > s.scanned && s.status === "done" && !s.late;
+  const capped = Boolean(s.capped);
   $("counts").textContent =
     `${s.scanned} element${s.scanned === 1 ? "" : "s"} classified` +
     (s.cached ? ` (${s.cached} from cache)` : "") +
     (s.late ? ` (${s.late} added after load)` : "") +
     ` of ${s.totalElements} on the page` +
     (capped ? " (capped, raise the limit in options)" : "") +
-    `. ${s.removed.length} removed.`;
+    `. ${s.removed.length} ${s.removed.length && s.removed[0].action === "outline" ? "outlined" : "removed"}.`;
   $("errors").textContent = s.errors.length ? s.errors.join("\n") : "";
+  $("hint").textContent = s.removed.length && s.removed[0].action === "outline"
+    ? "Outline mode: ads stay on the page with a red border. Switch the action in options to remove them."
+    : "";
   renderCost(s.usage);
 
   const wrap = $("removedWrap");
@@ -60,6 +66,29 @@ function render(s) {
       const li = document.createElement("li");
       li.innerHTML = r.p == null ? `<b>wrap</b> ` : `<b>${(r.p * 100).toFixed(0)}%</b> `;
       li.append(document.createTextNode(r.summary));
+      if (r.shot) {
+        const img = document.createElement("img");
+        img.src = r.shot;
+        img.alt = "screenshot of the removed element";
+        img.className = "shot";
+        li.append(img);
+      }
+      if (r.key != null) {
+        const show = document.createElement("button");
+        show.textContent = "Show";
+        show.title = "Put it back on the page for 3 seconds with a red outline, scrolled into view";
+        show.addEventListener("click", () => askTab({ type: "peek", key: r.key }));
+        li.append(show);
+      }
+      if (r.html) {
+        const det = document.createElement("details");
+        const sum = document.createElement("summary");
+        sum.textContent = "HTML";
+        const pre = document.createElement("pre");
+        pre.textContent = r.html;
+        det.append(sum, pre);
+        li.append(det);
+      }
       ul.append(li);
     }
     wrap.append(ul);
@@ -100,21 +129,10 @@ function askTab(msg) {
     chrome.tabs.sendMessage(tab.id, msg, (res) => resolve(chrome.runtime.lastError ? null : res));
   });
 }
-// This page's spend, plus the lifetime total the worker keeps across all pages.
-async function renderCost(usage) {
-  const pageTokens = usage ? usage.input_tokens || 0 : 0;
-  const page = pageTokens ? `This page: ${formatUsd(costUsd(usage))} (${fmt(pageTokens)} tokens)` : "This page: $0";
-  const res = await ask({ type: "getUsageTotal" });
-  const total = res && res.total;
-  const all = total && total.input_tokens
-    ? `All time: ${formatUsd(costUsd(total))} over ${fmt(total.requests)} request${total.requests === 1 ? "" : "s"} since ${new Date(total.since).toLocaleDateString()}`
-    : "All time: $0";
-  $("cost").innerHTML = "";
-  for (const line of [page, all]) {
-    const div = document.createElement("div");
-    div.textContent = line;
-    $("cost").append(div);
-  }
+// What this page's classification cost, from the token counts jev returned.
+function renderCost(usage) {
+  const tokens = usage ? usage.input_tokens || 0 : 0;
+  $("cost").textContent = tokens ? `Cost: ${formatUsd(costUsd(usage))} (${fmt(tokens)} input tokens)` : "Cost: $0";
 }
 
 function fmt(n) { return n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n); }

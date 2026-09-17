@@ -1,9 +1,8 @@
 // Service worker: owns the API key, talks to jev, caches verdicts, keeps per-tab stats.
 import { classifyBatch, hashString } from "./jev.js";
-import { getSettings, getApiKey } from "./settings.js";
+import { getSettings, getApiKey, getSyncedKey } from "./settings.js";
 
 const CACHE_KEY = "verdictCache";
-const USAGE_KEY = "usageTotal"; // lifetime token counts, so the popup can show total spend
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CACHE_MAX = 3000;
 
@@ -21,7 +20,11 @@ const handlers = {
   async getConfig() {
     const settings = await getSettings();
     const apiKey = await getApiKey();
-    return { settings, hasKey: Boolean(apiKey) };
+    // Which key is in use, so the popup can show it (an override saved on the
+    // options page wins over the one synced from .env).
+    const { apiKey: saved } = await chrome.storage.local.get("apiKey");
+    const keySource = !apiKey ? "" : saved ? "options page" : (await getSyncedKey()) === apiKey ? ".env" : "";
+    return { settings, hasKey: Boolean(apiKey), keyTail: apiKey ? apiKey.slice(-4) : "", keySource };
   },
 
   // { page, elements: [{ id, desc, sig }] } -> { probabilities: { id: p }, cached: n, usage }
@@ -48,7 +51,6 @@ const handlers = {
     if (pending.length) {
       const res = await classifyBatch({ apiKey, page: msg.page, elements: pending, model: settings.model, apiUrl: settings.apiUrl });
       usage = res.usage;
-      await addUsage(usage);
       for (const el of pending) {
         const p = res.probabilities[el.id];
         probabilities[el.id] = p;
@@ -73,13 +75,16 @@ const handlers = {
     return { stats: data[key] || null };
   },
 
-  async getUsageTotal() {
-    return { total: await loadUsage() };
-  },
-
-  async resetUsageTotal() {
-    await chrome.storage.local.set({ [USAGE_KEY]: emptyUsage() });
-    return {};
+  // Content script, just before removing elements: one capture of the visible
+  // tab, cropped to each rect (CSS px, viewport-relative) -> small JPEG data URLs.
+  async captureRegions(msg, sender) {
+    const tab = sender.tab;
+    if (!tab || !tab.active) return { shots: null }; // captureVisibleTab only sees the active tab
+    const bitmap = await captureTab(tab);
+    if (!bitmap) return { shots: null };
+    const dpr = Number(msg.dpr) || 1;
+    const shots = await Promise.all((msg.rects || []).map((r) => (r ? crop(bitmap, r, dpr) : null)));
+    return { shots };
   },
 
   async clearCache() {
@@ -104,23 +109,51 @@ const handlers = {
   },
 };
 
-function emptyUsage() { return { input_tokens: 0, output_tokens: 0, requests: 0, since: Date.now() }; }
+// Chrome allows about two captureVisibleTab calls per second, so captures are
+// spaced out, and batches that finish together share one capture.
+const CAPTURE_MIN_GAP_MS = 600;
+const CAPTURE_FRESH_MS = 400;
+const SHOT_MAX_PX = 400;
+let lastCapture = { tabId: null, at: 0, bitmap: null, promise: null };
 
-async function loadUsage() {
-  const data = await chrome.storage.local.get(USAGE_KEY);
-  return { ...emptyUsage(), ...(data[USAGE_KEY] || {}) };
+async function captureTab(tab) {
+  if (lastCapture.promise) {
+    await lastCapture.promise.catch(() => {});
+    return captureTab(tab);
+  }
+  const now = Date.now();
+  if (lastCapture.tabId === tab.id && lastCapture.bitmap && now - lastCapture.at < CAPTURE_FRESH_MS) return lastCapture.bitmap;
+  const wait = Math.max(0, lastCapture.at + CAPTURE_MIN_GAP_MS - now);
+  lastCapture.promise = (async () => {
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    try {
+      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 75 });
+      const blob = await (await fetch(dataUrl)).blob();
+      const bitmap = await createImageBitmap(blob);
+      lastCapture = { tabId: tab.id, at: Date.now(), bitmap, promise: null };
+      return bitmap;
+    } catch {
+      lastCapture = { tabId: null, at: Date.now(), bitmap: null, promise: null };
+      return null;
+    }
+  })();
+  return lastCapture.promise;
 }
 
-let usageWriting = Promise.resolve();
-function addUsage(usage) {
-  usageWriting = usageWriting.then(async () => {
-    const total = await loadUsage();
-    total.input_tokens += (usage && usage.input_tokens) || 0;
-    total.output_tokens += (usage && usage.output_tokens) || 0;
-    total.requests += 1;
-    await chrome.storage.local.set({ [USAGE_KEY]: total });
-  }).catch(() => {});
-  return usageWriting;
+async function crop(bitmap, r, dpr) {
+  const sx = Math.max(0, Math.round(r.left * dpr));
+  const sy = Math.max(0, Math.round(r.top * dpr));
+  const sw = Math.min(bitmap.width - sx, Math.round(r.width * dpr));
+  const sh = Math.min(bitmap.height - sy, Math.round(r.height * dpr));
+  if (sw < 8 || sh < 8) return null;
+  const scale = Math.min(1, SHOT_MAX_PX / Math.max(sw, sh));
+  const canvas = new OffscreenCanvas(Math.max(1, Math.round(sw * scale)), Math.max(1, Math.round(sh * scale)));
+  canvas.getContext("2d").drawImage(bitmap, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.6 });
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return `data:image/jpeg;base64,${btoa(bin)}`;
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {

@@ -46,10 +46,15 @@ Defaults (all adjustable on the options page):
 | Max elements per load | 0 (no cap) | every rendered element goes to jev; set a number to stop early on huge pages |
 | Elements per request | 25 | one request, 25 questions |
 | Requests in flight | 3 | |
-| Action | remove (restorable) | "hide" is available |
+| Action | remove (restorable) | "hide" and "outline" (testing: red border, keeps the ad) are available |
+| Only classify what is on screen | on | elements are classified as they scroll into view |
 | Text-share safety rail | 50% | never removes an element holding more than half the page's text |
 
-Elements are taken in document order, all of them by default (a busy news page is a few thousand elements, so roughly 100 requests per load; the popup shows tokens and cost). Anything not rendered (`display: none`, zero rects), `script`/`style`/`head` and SVG internals are skipped. When a parent is removed, its children are dropped from later batches instead of being classified.
+Elements are taken in document order. By default only the ones intersecting the viewport (plus a 25% margin) are sent on load; the rest are classified as they scroll into view, so a long page costs only what you actually look at. Turn **Only classify what is on screen** off to do the whole page at once (a busy news page is a few thousand elements, roughly 100 requests). Anything not rendered (`display: none`, zero rects), `script`/`style`/`head` and SVG internals are skipped. When a parent is removed, its children are dropped from later batches instead of being classified.
+
+## Single-page sites
+
+Sites like YouTube swap the page without a load event. The content script watches the URL (popstate, hashchange, and a poll for pushState) and treats a change as a new page: a full rescan runs 800 ms after the URL settles. A rescan asked for while a pass is running waits and runs right after it.
 
 ## After load
 
@@ -59,11 +64,11 @@ When an ad is removed, its wrapper is checked too: if the wrapper now has no tex
 
 ## Cost
 
-jev lists [$0.042 per million input tokens, output free](https://docs.typesafe.ai/models). The API returns token counts, so the popup computes dollars from that price: this page's spend, and a running total across all pages (reset it on the options page). A few-thousand-element page is roughly half a million input tokens, about two cents.
+jev lists [$0.042 per million input tokens, output free](https://docs.typesafe.ai/models). The API returns token counts, so the popup computes this page's cost from that price. A few-thousand-element page is roughly half a million input tokens, about two cents. The popup footer shows the last four characters of the key in use and where it came from (`.env` or the options page).
 
 ## Popup
 
-The toolbar icon shows what happened on the current tab: how many elements were classified (and how many were added after load), what was removed (with jev's probability, or `wrap` for an emptied wrapper), the cost, and anything the safety rail refused to remove. **Restore removed** puts everything back; **Rescan page** runs the pass again; the checkbox disables the extension for that site.
+The toolbar icon shows what happened on the current tab: how many elements were classified (and how many were added after load), what was removed (with jev's probability, or `wrap` for an emptied wrapper), the cost, and anything the safety rail refused to remove. Each removed entry shows a screenshot of the element as it looked just before removal (the worker captures the visible tab once per batch and crops it; the tab has to be the active one, and the element on screen). Each entry also has a **Show** button that puts the element back for three seconds with a red outline, scrolled into view, and an expandable **HTML** snippet of what was removed. To see every verdict in place, set the action to **Outline** in options: ads then stay on the page with a red border and jev's score in the tooltip. **Restore removed** puts everything back; **Rescan page** runs the pass again; the checkbox disables the extension for that site.
 
 ## Development
 

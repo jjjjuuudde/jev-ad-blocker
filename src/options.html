@@ -67,11 +67,18 @@
       <select id="action">
         <option value="remove">Remove it from the page (restorable from the popup)</option>
         <option value="hide">Hide it (display: none)</option>
+        <option value="outline">Outline it (testing: keep it on the page with a red border, score in the tooltip)</option>
       </select>
     </label>
     <label>Never remove an element holding more than this share of the page text
       <small>Stops a wrongly-flagged wrapper from blanking the page.</small>
       <input type="number" id="maxTextShare" min="0.05" max="1" step="0.05" />
+    </label>
+    <label><input type="checkbox" id="viewportOnly" /> Only classify what is on screen
+      <small>Elements outside the viewport (plus a 25% margin) are left alone until you scroll to them. Saves tokens on long pages; turn off to classify the whole page at once.</small>
+    </label>
+    <label><input type="checkbox" id="screenshots" /> Screenshot each removed element
+      <small>Just before an ad is removed, the visible tab is captured and cropped to the element, so the popup can show what went. Only works while the tab is the active one.</small>
     </label>
     <label><input type="checkbox" id="watchDom" /> Keep watching after load
       <small>Classifies elements the site adds later, such as ad slots that refresh every few seconds. Verdicts are cached, so a repeating ad costs little.</small>
@@ -89,7 +96,6 @@
   <button id="save">Save settings</button>
   <button id="reset">Reset to defaults</button>
   <button id="clearCache">Clear verdict cache</button>
-  <button id="resetUsage">Reset spend counter</button>
   <div class="msg" id="msg"></div>
 
   <script type="module" src="options.js"></script>

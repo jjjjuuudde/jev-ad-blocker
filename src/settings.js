@@ -13,8 +13,16 @@ export const DEFAULT_SETTINGS = {
   batchSize: 25,
   // Requests in flight at once.
   concurrency: 3,
-  // "remove" detaches the node (restorable from the popup), "hide" sets display:none.
+  // "remove" detaches the node (restorable from the popup), "hide" sets
+  // display:none, "outline" leaves it in place with a red border and jev's
+  // score in its tooltip (for checking what would be removed).
   action: "remove",
+  // Before removing an element, grab a screenshot of it (cropped from a capture
+  // of the visible tab) so the popup can show what went.
+  screenshots: true,
+  // Only classify elements that intersect the viewport (plus a margin); the
+  // rest are classified as they scroll into view. Saves tokens on long pages.
+  viewportOnly: true,
   // Reuse a verdict for this many days instead of asking jev again. 0 means
   // every page load classifies fresh: a load costs a fraction of a cent, and
   // fresh verdicts follow the page as it changes.
