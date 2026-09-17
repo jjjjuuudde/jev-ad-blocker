@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>jev ad blocker</title>
+  <style>
+    :root { color-scheme: light dark; font: 13px/1.4 system-ui, sans-serif; }
+    body { margin: 0; width: 320px; padding: 12px; }
+    h1 { font-size: 14px; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
+    h1 span { font-weight: normal; opacity: .7; font-size: 12px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+    .stat { display: flex; justify-content: space-between; opacity: .85; }
+    button { font: inherit; padding: 4px 8px; cursor: pointer; }
+    .warn { color: #b45309; }
+    .err { color: #dc2626; white-space: pre-wrap; }
+    ul { margin: 6px 0 0; padding-left: 16px; max-height: 180px; overflow: auto; }
+    li { margin: 2px 0; word-break: break-all; }
+    li b { font-weight: 600; }
+    a { color: inherit; }
+    label { display: flex; gap: 6px; align-items: center; }
+    footer { margin-top: 8px; display: flex; justify-content: space-between; font-size: 12px; opacity: .8; }
+  </style>
+</head>
+<body>
+  <h1>jev ad blocker <span id="site"></span></h1>
+  <div class="row">
+    <label><input type="checkbox" id="siteToggle" /> Run on this site</label>
+  </div>
+  <div id="status" class="stat"></div>
+  <div id="counts"></div>
+  <div id="errors" class="err"></div>
+  <div class="row">
+    <button id="rescan">Rescan page</button>
+    <button id="restore">Restore removed</button>
+  </div>
+  <div id="removedWrap"></div>
+  <footer>
+    <a href="#" id="options">Options</a>
+    <span id="usage"></span>
+  </footer>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

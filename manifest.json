@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "jev ad blocker",
+  "version": "0.1.0",
+  "description": "Walks the elements on each page, asks jev whether each one is an ad, and removes the ones jev is confident about.",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["https://api.typesafe.ai/*"],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["src/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "jev ad blocker"
+  },
+  "options_ui": {
+    "page": "src/options.html",
+    "open_in_tab": true
+  }
+}

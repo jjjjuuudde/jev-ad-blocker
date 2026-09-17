@@ -1,0 +1,5 @@
+# Your real API key lives in .env; the extension reads it from the generated file below.
+src/config.local.js
+node_modules/
+*.zip
+.DS_Store
