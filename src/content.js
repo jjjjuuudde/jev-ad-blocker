@@ -29,11 +29,14 @@
   const MAX_HTML = 800;            // outerHTML snippet kept per removed element, for the popup
   const WATCH_DEBOUNCE_MS = 250;   // let a burst of DOM insertions settle before classifying
   const SCROLL_DEBOUNCE_MS = 150;
-  const VIEWPORT_MARGIN = 0.1;     // classify a little beyond the visible area (fraction of viewport size)
+  const VIEWPORT_MARGIN = 0.1;     // sideways / above-the-fold slack (fraction of viewport size)
+  const LOOK_BEHIND = 0.5;         // viewport heights above the fold (for scrolling back up)
   const PEEK_MS = 3000;
   const NAV_DEBOUNCE_MS = 800;     // single-page apps change the URL, then fill the page in
   const SETTLE_DELAYS_MS = [0, 1000, 3000]; // extra in-view sweeps after the load event
   const SHOTS_KEPT = 40;           // screenshots kept in the stats (they go through storage.session)
+  const MEMORY_MAX = 5000;         // verdicts remembered per page (loose signature -> p)
+  const REPLAY_BUDGET = 400;       // elements the synchronous replay may inspect per DOM change
 
   const state = {
     status: "idle",
@@ -55,6 +58,12 @@
   const takenOut = new Set();    // elements we removed or hid (for the empty-wrapper check)
   let seen = new WeakSet();      // elements already classified in this page's lifetime
   const ignored = new WeakSet(); // elements that can never be candidates (text-level, leaf text); permanent
+  // Verdicts for this page keyed by a loose signature (tag, class, text, hosts),
+  // so a node a virtualised list unmounts and re-creates on scroll-back gets
+  // the same verdict applied at once, with no request. Pinterest does this.
+  const memory = new Map();
+  let lastSettings = null;       // from the most recent prepare(), for synchronous replay
+  let lastTextTotal = 0;
   let running = false;
   let paused = false;            // after "restore": leave the page alone until a rescan
   let nextId = 0;
@@ -131,6 +140,7 @@
       return null;
     }
     const page = { url: location.href, title: document.title, viewport: { w: innerWidth, h: innerHeight } };
+    lastSettings = settings;
     return { settings, page };
   }
 
@@ -140,6 +150,7 @@
     running = true;
     paused = false;
     seen = new WeakSet();
+    memory.clear();
     state.status = "scanning";
     state.startedAt = Date.now();
     state.finishedAt = 0;
@@ -238,6 +249,7 @@
           const hits = [];
           for (const it of batch) {
             const p = res.probabilities[it.id] ?? 0;
+            remember(it.loose, p);
             if (settings.debug) console.log(`[jev-ad] ${p.toFixed(3)} ${it.summary}`, it.el);
             if (p >= settings.threshold && it.el.isConnected) hits.push({ it, p });
           }
@@ -281,14 +293,61 @@
     if (observer || !document.body) return;
     observer = new MutationObserver((mutations) => {
       if (paused) return;
+      let budget = REPLAY_BUDGET;
       for (const m of mutations) {
         for (const node of m.addedNodes) {
-          if (node.nodeType === 1 && !seen.has(node) && !takenOut.has(node)) pendingRoots.add(node);
+          if (node.nodeType !== 1 || seen.has(node) || takenOut.has(node)) continue;
+          // Known nodes (re-mounted by a virtualised list) get their verdict now,
+          // before the site can paint them; the rest wait for the debounced pass.
+          if (memory.size && budget > 0) budget -= replayKnown(node, budget);
+          pendingRoots.add(node);
         }
       }
       if (pendingRoots.size) scheduleIncremental();
     });
     observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // Walk a freshly added subtree and apply remembered verdicts synchronously.
+  // Returns how many elements were inspected (for the per-callback budget).
+  function replayKnown(root, budget) {
+    const settings = lastSettings;
+    if (!settings) return 0;
+    let n = 0;
+    const list = [root, ...root.querySelectorAll("*")];
+    for (const el of list) {
+      if (n >= budget) break;
+      n++;
+      if (seen.has(el) || ignored.has(el) || takenOut.has(el)) continue;
+      const tag = el.tagName.toLowerCase();
+      if (SKIP_TAGS.has(tag) || TEXT_TAGS.has(tag)) continue;
+      const p = memory.get(looseKeyOf(el));
+      if (p === undefined) continue;
+      seen.add(el);
+      if (p < settings.threshold) continue;
+      if (settings.protectedSelector && isProtected(el, settings.protectedSelector)) continue;
+      state.cached += 1;
+      state.scanned += 1;
+      act({ el, id: "", summary: summarize(el, { src: hostOf(el.currentSrc || el.src), text: normText(el.textContent) }), loose: "" }, p, settings, lastTextTotal);
+    }
+    return n;
+  }
+
+  function remember(key, p) {
+    if (!key) return;
+    if (memory.size >= MEMORY_MAX && !memory.has(key)) memory.delete(memory.keys().next().value); // drop the oldest
+    memory.set(key, p);
+  }
+
+  // What a re-created node shares with its previous incarnation: no ids
+  // (frameworks generate fresh ones), no position, no size.
+  function looseKeyOf(el) {
+    const tag = el.tagName.toLowerCase();
+    const cls = typeof el.className === "string" ? el.className.trim().replace(/\s+/g, " ").slice(0, MAX_ATTR) : "";
+    const text = normText(el.textContent).slice(0, 100);
+    const src = tag === "img" || tag === "iframe" || tag === "video" ? hostOf(el.currentSrc || el.src || el.getAttribute("data-src")) : "";
+    const href = tag === "a" ? hostOf(el.href) : "";
+    return [tag, cls, text, src, href].join("|");
   }
 
   function stopWatching() {
@@ -409,9 +468,10 @@
   function collect(settings, roots) {
     const total = document.body ? document.body.querySelectorAll("*").length : 0;
     const textTotal = document.body ? normText(document.body.textContent).length : 0;
+    lastTextTotal = textTotal;
     const items = [];
     let capped = false;
-    const view = settings.viewportOnly ? viewportBox() : null;
+    const view = settings.viewportOnly ? viewportBox(settings) : null;
     for (const root of roots) {
       if (!root || !root.isConnected) continue;
       const list = root === document.body ? root.querySelectorAll("*") : [root, ...root.querySelectorAll("*")];
@@ -428,8 +488,18 @@
         const desc = describe(el);
         if (!canBeAd(el, desc, rect)) { ignored.add(el); continue; }
         seen.add(el);
+        const loose = looseKeyOf(el);
+        const known = memory.get(loose);
+        if (known !== undefined) {
+          // Same element as one already judged on this page (a re-mounted node,
+          // or a repeated component): reuse the verdict, no request.
+          state.cached += 1;
+          state.scanned += 1;
+          if (known >= settings.threshold) act({ el, id: "", summary: summarize(el, desc), loose }, known, settings, textTotal);
+          continue;
+        }
         const id = `e${nextId++}`;
-        items.push({ el, id, desc, sig: signature(desc), summary: summarize(el, desc), rect: visibleRect(rect), priority: adPriority(desc) });
+        items.push({ el, id, desc, sig: signature(desc), summary: summarize(el, desc), rect: visibleRect(rect), priority: adPriority(desc), loose });
       }
     }
     return { items, total, textTotal, capped };
@@ -470,10 +540,12 @@
     try { return Boolean(el.closest(selector)); } catch { return false; } // bad selector in settings
   }
 
-  function viewportBox() {
+  // The band we classify: the viewport, a little slack sideways, half a screen
+  // above, and `lookAhead` screens below so the next scroll is already clean.
+  function viewportBox(settings) {
     const mx = innerWidth * VIEWPORT_MARGIN;
-    const my = innerHeight * VIEWPORT_MARGIN;
-    return { left: -mx, top: -my, right: innerWidth + mx, bottom: innerHeight + my };
+    const ahead = Math.max(0, Number(settings.lookAhead) || 0);
+    return { left: -mx, top: -innerHeight * LOOK_BEHIND, right: innerWidth + mx, bottom: innerHeight * (1 + ahead) };
   }
 
   // getBoundingClientRect is viewport-relative, so fixed/sticky elements count as in view.

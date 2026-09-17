@@ -20,24 +20,31 @@ export const DEFAULT_SETTINGS = {
   batchTokens: 32000,
   // Requests in flight at once (jev allows 1,200 requests a minute).
   concurrency: 6,
-  // "remove" detaches the node (restorable from the popup), "hide" sets
-  // display:none, "outline" leaves it in place with a red border and jev's
-  // score in its tooltip (for checking what would be removed).
-  action: "remove",
+  // "hide" sets display:none and leaves the node where it is, which is what
+  // React/Vue-style sites need: detaching a node they manage makes their next
+  // update throw (removeChild on a missing child) and blank the page, as seen
+  // on Pinterest. "remove" detaches the node (restorable), "outline" leaves it
+  // in place with a red border and jev's score in its tooltip (for testing).
+  action: "hide",
   // Before removing an element, grab a screenshot of it (cropped from a capture
   // of the visible tab) so the popup can show what went.
   screenshots: true,
-  // Only classify elements that intersect the viewport (plus a margin); the
-  // rest are classified as they scroll into view. Saves tokens on long pages.
+  // Only classify elements near the viewport; the rest are classified as they
+  // scroll into view. Saves tokens on long pages.
   viewportOnly: true,
+  // How far below the viewport to classify ahead of the user, in viewport
+  // heights, so ads are gone before they scroll into view instead of
+  // disappearing while they look at them. Half a screen above is also covered.
+  lookAhead: 1.5,
   // Reuse a verdict for this many days instead of asking jev again. 0 means
   // every page load classifies fresh: a load costs a fraction of a cent, and
   // fresh verdicts follow the page as it changes.
   cacheDays: 0,
-  // Independently of cacheDays, reuse a confident "not an ad" verdict (p below
-  // 0.2) for this many minutes. A clean nav bar is still clean a minute later,
-  // and most of a repeat page is exactly that. 0 turns it off.
-  cleanCacheMinutes: 60,
+  // Independently of cacheDays, reuse a confident verdict (p below 0.2, or at
+  // or above the removal threshold) for this many minutes. A clean nav bar is
+  // still clean a minute later, and an ad slot that was an ad is still one
+  // after a reload. 0 turns it off; only the unsure middle is always re-asked.
+  confidentCacheMinutes: 60,
   // Keep watching the page after the first pass and classify elements the site
   // adds later (ad slots that refresh every few seconds, lazy-loaded units).
   watchDom: true,

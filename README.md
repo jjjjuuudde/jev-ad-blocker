@@ -41,19 +41,20 @@ Defaults (all adjustable on the options page):
 | --- | --- | --- |
 | Threshold | 0.85 | a little under jev's 0.9 "proceed automatically" line |
 | Reuse verdicts | 0 days | every load asks jev fresh; a load costs a fraction of a cent |
-| Reuse clean verdicts | 60 min | confident "not an ad" (p < 0.2) verdicts are reused on repeat pages |
+| Reuse confident verdicts | 60 min | p < 0.2, or p ≥ the threshold, is reused on repeat pages; the unsure middle is re-asked |
 | Keep watching after load | on | classifies elements the site adds later (refreshing ad slots) |
 | Remove empty wrappers | on | takes out the ad's container once it has no text or media left |
 | Max elements per load | 0 (no cap) | every rendered element goes to jev; set a number to stop early on huge pages |
 | Elements per request | 200 | a count cap; the token budget below usually closes a batch first |
 | Token budget per request | 32k | jev rejects requests above ~40k input tokens (`max_tokens_exceeded`); real elements cost ~250-400 tokens each |
 | Requests in flight | 6 | jev allows 1,200 requests a minute |
-| Action | remove (restorable) | "hide" and "outline" (testing: red border, keeps the ad) are available |
-| Only classify what is on screen | on | elements are classified as they scroll into view |
+| Action | hide (restorable) | display:none in place; "remove" detaches the node but blanks React-style sites, "outline" is for testing |
+| Only classify what is near the screen | on | elements are classified as they come near the view |
+| Look ahead | 1.5 screens | classified before the user scrolls to them, so nothing shifts under them |
 | Text-share safety rail | 50% | never removes an element holding more than half the page's text |
 | Protected elements | YouTube's player | `hostname selector` lines; nothing inside a match is classified or removed |
 
-Elements are taken in document order. By default only the ones intersecting the viewport (plus a 10% margin) are sent on load; the rest are classified as they scroll into view, so a long page costs only what you actually look at. Turn **Only classify what is on screen** off to do the whole page at once (a busy news page is a few thousand elements, roughly 100 requests). Anything not rendered (`display: none`, zero rects), `script`/`style`/`head` and SVG internals are skipped. When a parent is removed, its children are dropped from later batches instead of being classified.
+Elements are taken in document order. By default only the ones in a band around the viewport are sent on load: the visible area, half a screen above, and 1.5 screens below (**Look ahead** in options), so ads are gone before the user scrolls to them and nothing shifts while they read. The rest are classified as they come near, so a long page costs only what you actually get to. Turn **Only classify what is on screen** off to do the whole page at once (a busy news page is a few thousand elements, roughly 100 requests). Anything not rendered (`display: none`, zero rects), `script`/`style`/`head` and SVG internals are skipped. When a parent is removed, its children are dropped from later batches instead of being classified.
 
 ## Staying under the rate limit
 
@@ -62,11 +63,16 @@ jev allows 1,200 requests a minute and 250,000 tokens a second; requests are the
 - **Big batches.** Up to 200 questions per request, closed early at an estimated 32k input tokens (jev rejects requests somewhere above 40k with `max_tokens_exceeded`; a real element with its question costs 250-400 tokens, so a batch is usually 80-120 elements). If jev still rejects one, the worker halves it and retries both halves.
 - **Candidate filter.** Text-level elements (`span`, `p`, headings, list items, ...), text-only leaves, anything under 20 px, and wrappers whose only child fills the same box are never sent; the container around them is. Anything with an ad hint, media, an iframe or a link is always sent. On a YouTube page this cuts the questions by well over half.
 - **Rate limiter.** The worker runs one token bucket (15 requests a second) across every tab and honours jev's `Retry-After` on a 429, so retries don't pile up.
-- **Clean cache.** A confident "not an ad" verdict (p < 0.2) is reused for 60 minutes; navigating within a single-page site only sends the new elements.
+- **Confident cache.** A confident verdict either way (p < 0.2, or p at or above the removal threshold) is reused for 60 minutes; navigating within a single-page site only sends the new elements.
+- **Page memory.** Within a page, every verdict is also remembered by a loose signature (tag, classes, text, hosts, no ids). Virtualised lists such as Pinterest's grid unmount pins as you scroll away and create fresh nodes when you scroll back; those get their verdict re-applied synchronously in the mutation observer, before the site can paint them, with no request.
 
 ## When it runs
 
 The first pass starts as soon as the DOM is parsed (Chrome's `document_idle`), not at the window `load` event, which on heavy pages can be many seconds away. Within a pass, elements that look like ads (ad attributes, iframes, off-site links or images) are sent first, so they usually go in the first round trip. Elements that render later are picked up by the DOM watcher (added nodes, 250 ms debounce), a scroll listener in capture phase (so inner scroll containers count too), a ResizeObserver on `<body>` (layout changes without a DOM change, such as an ad slot growing when its iframe loads), and settle sweeps at 0, 1 and 3 seconds after `load`. Pages Chrome prerendered wait until they become the real page; pages restored from the back/forward cache get a fresh full pass.
+
+## Why hide, not remove
+
+The default action is `display: none` in place. Sites built on React, Vue and similar keep their own model of the DOM; if the extension detaches a node they manage, their next update calls `removeChild` on a child that is no longer there, the error propagates, and the framework unmounts the page (Pinterest went blank this way). Hiding leaves the node where the framework expects it. `remove` is still available in options for plain pages.
 
 ## Protected elements
 

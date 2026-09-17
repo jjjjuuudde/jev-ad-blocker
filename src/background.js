@@ -6,7 +6,9 @@ const CACHE_KEY = "verdictCache";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CACHE_MAX = 20000; // entries; ~50 bytes each, well under storage.local's 10 MB
 const MINUTE_MS = 60 * 1000;
-const CLEAN_P = 0.2; // verdicts below this count as "confidently not an ad" for the short cache
+// A verdict below CLEAN_P, or at/above the user's removal threshold, counts as
+// confident either way for the short cache.
+const CLEAN_P = 0.2;
 
 // jev allows 1,200 requests/minute. Fifteen a second across every tab keeps a
 // margin for retries; jev's Retry-After (on 429) pauses the bucket.
@@ -41,9 +43,9 @@ const handlers = {
     if (!apiKey) throw new Error("No jev API key. Paste it into .env and run `npm run sync-key`, or set it on the options page.");
 
     // Two reuse windows: any verdict for cacheDays (off by default), and a
-    // confident "not an ad" verdict for cleanCacheMinutes (on by default).
+    // confident verdict either way for confidentCacheMinutes (on by default).
     const anyTtl = (Number(settings.cacheDays) || 0) * DAY_MS;
-    const cleanTtl = (Number(settings.cleanCacheMinutes) || 0) * MINUTE_MS;
+    const cleanTtl = (Number(settings.confidentCacheMinutes) || 0) * MINUTE_MS;
     const cache = anyTtl > 0 || cleanTtl > 0 ? await loadCache() : null;
     const now = Date.now();
     const probabilities = {};
@@ -51,7 +53,7 @@ const handlers = {
     for (const el of msg.elements) {
       const hit = cache && cache[el.sig];
       const age = hit ? now - hit.t : Infinity;
-      if (hit && (age < anyTtl || (hit.p < CLEAN_P && age < cleanTtl))) probabilities[el.id] = hit.p;
+      if (hit && (age < anyTtl || ((hit.p < CLEAN_P || hit.p >= settings.threshold) && age < cleanTtl))) probabilities[el.id] = hit.p;
       else pending.push(el);
     }
     const cachedCount = msg.elements.length - pending.length;

@@ -1,7 +1,7 @@
 import { DEFAULT_SETTINGS, getSettings, saveSettings, getSyncedKey } from "./settings.js";
 
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["threshold", "maxElements", "batchSize", "batchTokens", "concurrency", "model", "cacheDays", "cleanCacheMinutes", "action", "maxTextShare", "viewportOnly", "screenshots", "watchDom", "collapseEmptyWrappers", "debug", "enabled"];
+const FIELDS = ["threshold", "maxElements", "batchSize", "batchTokens", "concurrency", "model", "cacheDays", "confidentCacheMinutes", "action", "maxTextShare", "viewportOnly", "lookAhead", "screenshots", "watchDom", "collapseEmptyWrappers", "debug", "enabled"];
 
 async function load() {
   const s = await getSettings();
@@ -39,7 +39,8 @@ function read() {
   if (!(s.concurrency >= 1)) s.concurrency = DEFAULT_SETTINGS.concurrency;
   if (!(s.maxElements >= 0)) s.maxElements = DEFAULT_SETTINGS.maxElements;
   if (!(s.cacheDays >= 0)) s.cacheDays = DEFAULT_SETTINGS.cacheDays;
-  if (!(s.cleanCacheMinutes >= 0)) s.cleanCacheMinutes = DEFAULT_SETTINGS.cleanCacheMinutes;
+  if (!(s.confidentCacheMinutes >= 0)) s.confidentCacheMinutes = DEFAULT_SETTINGS.confidentCacheMinutes;
+  if (!(s.lookAhead >= 0)) s.lookAhead = DEFAULT_SETTINGS.lookAhead;
   if (!(s.maxTextShare > 0 && s.maxTextShare <= 1)) s.maxTextShare = DEFAULT_SETTINGS.maxTextShare;
   if (!s.model) s.model = DEFAULT_SETTINGS.model;
   return s;

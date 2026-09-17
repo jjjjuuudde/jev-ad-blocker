@@ -119,8 +119,9 @@ try {
   assert.equal(stats.errors.length, 0, `errors: ${stats.errors.join("; ")}`);
   assert.ok(seen.requests >= 1, "no requests reached the mock jev");
   assert.ok(stats.scanned >= 10, `only ${stats.scanned} scanned`);
-  assert.equal(await page.locator("#ad-banner").count(), 0, "banner ad should be removed");
-  assert.equal(await page.locator("#ad-frame").count(), 0, "ad iframe should be removed");
+  assert.equal(await page.locator("#ad-banner").isHidden(), true, "banner ad should be hidden");
+  assert.equal(await page.locator("#ad-frame").isHidden(), true, "ad iframe should be hidden");
+  assert.equal(await page.locator("#ad-banner").count(), 1, "hide leaves the node in the DOM (React safety)");
   assert.equal(await page.locator("article.article p.body").count(), 2, "content paragraphs must survive");
   assert.equal(await page.locator("#site-header").count(), 1);
   assert.equal(await page.locator("#site-footer").count(), 1);
@@ -141,7 +142,7 @@ try {
   });
   assert.equal(seen.requests, before, "reload should hit the verdict cache, not jev");
   assert.equal(stats2.cached, stats2.scanned, "every element should come from cache on reload");
-  assert.equal(await page.locator("#ad-banner").count(), 0);
+  assert.equal(await page.locator("#ad-banner").isHidden(), true);
 
   // Restore puts the ads back.
   const restored = await sw.evaluate(async () => {
@@ -150,8 +151,8 @@ try {
     return chrome.tabs.sendMessage(tabId, { type: "restore" });
   });
   assert.equal(restored.stats.removed.length, 0);
-  assert.equal(await page.locator("#ad-banner").count(), 1, "restore should bring the banner back");
-  assert.equal(await page.locator("#ad-frame").count(), 1);
+  assert.equal(await page.locator("#ad-banner").isVisible(), true, "restore should bring the banner back");
+  assert.equal(await page.locator("#ad-frame").isVisible(), true);
 
   // Restore pauses the DOM watcher; a rescan starts it again.
   const tabId = await sw.evaluate(async () => {
@@ -172,8 +173,9 @@ try {
 
   // Dynamic content: the site injects a sticky bottom bar (grey, no text of its
   // own) holding an ad, and swaps the ad every 300ms the way a refreshing slot
-  // does. The ad must go, the bar must go with it, and once the bar is off the
-  // page the refresh loop must stop reaching jev.
+  // does. The ad must go and the bar must go with it. (With the default "hide"
+  // action the bar stays in the DOM, hidden; refreshes into a hidden bar are
+  // still added nodes with zero size, so they are skipped without a request.)
   await page.evaluate(() => {
     const bar = document.createElement("div");
     bar.id = "sticky-bar";
@@ -191,12 +193,12 @@ try {
     setInterval(() => { bar.querySelector(".ad-unit")?.remove(); bar.append(unit()); window.__refreshes++; }, 300);
   });
   const stats3 = await waitDone((s) => s.late > 0 && s.removed.some((r) => /sticky-bar/.test(r.summary)));
-  assert.equal(await page.locator("#sticky-bar").count(), 0, "the empty sticky bar should be collapsed along with its ad");
+  assert.equal(await page.locator("#sticky-bar").isHidden(), true, "the empty sticky bar should be collapsed along with its ad");
   assert.ok(stats3.removed.some((r) => r.p == null && /empty wrapper/.test(r.summary)), `no wrapper entry in ${JSON.stringify(stats3.removed)}`);
   const requestsAfterCollapse = seen.requests;
   await page.waitForTimeout(1500);
-  assert.equal(seen.requests, requestsAfterCollapse, "refreshes into the detached bar must not reach jev");
-  assert.ok(await page.evaluate(() => window.__refreshes) >= 3, "the site's refresh loop should still be running (into the detached node)");
+  assert.equal(seen.requests, requestsAfterCollapse, "refreshes into the hidden bar must not reach jev");
+  assert.ok(await page.evaluate(() => window.__refreshes) >= 3, "the site's refresh loop should still be running (into the hidden node)");
   assert.equal(await page.locator("article.article p.body").count(), 2, "content must survive the dynamic pass");
 
   console.log(`e2e ok: ${stats.scanned} elements over ${stats.requests} requests (${seen.questions} questions), removed ${stats2.removed.length}, reload served ${stats2.cached} from cache, restore worked, dynamic bar collapsed (${stats3.late} late elements).`);

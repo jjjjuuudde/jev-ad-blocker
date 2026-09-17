@@ -59,9 +59,9 @@
     <label>Model
       <input type="text" id="model" />
     </label>
-    <label>Reuse confident "not an ad" verdicts for this many minutes
-      <small>An element jev scored below 0.2 is skipped on repeat pages for this long. A clean nav bar is still clean a minute later; most of a repeat page is exactly that. 0 turns it off.</small>
-      <input type="number" id="cleanCacheMinutes" min="0" max="1440" step="5" />
+    <label>Reuse confident verdicts for this many minutes
+      <small>An element jev scored below 0.2, or at or above your removal threshold, keeps its verdict on repeat pages for this long; only the unsure middle is asked again. A clean nav bar is still clean a minute later, and an ad slot is still an ad after a reload. 0 turns it off.</small>
+      <input type="number" id="confidentCacheMinutes" min="0" max="1440" step="5" />
     </label>
     <label>Reuse verdicts for this many days
       <small>0 (default) asks jev fresh on every page load; a load costs a fraction of a cent. Set a number of days to reuse an element's verdict across reloads instead.</small>
@@ -73,17 +73,22 @@
     <legend>Behaviour</legend>
     <label>What to do with an ad
       <select id="action">
-        <option value="remove">Remove it from the page (restorable from the popup)</option>
-        <option value="hide">Hide it (display: none)</option>
+        <option value="hide">Hide it (display: none; safe on React-style sites)</option>
+        <option value="remove">Remove it from the DOM (can blank React-style sites such as Pinterest and X)</option>
         <option value="outline">Outline it (testing: keep it on the page with a red border, score in the tooltip)</option>
       </select>
+      <small>Both hide and remove are restorable from the popup. Sites built with React, Vue and the like keep their own copy of the DOM; detaching a node they manage makes their next update throw and the page go blank, so hide is the default.</small>
     </label>
     <label>Never remove an element holding more than this share of the page text
       <small>Stops a wrongly-flagged wrapper from blanking the page.</small>
       <input type="number" id="maxTextShare" min="0.05" max="1" step="0.05" />
     </label>
-    <label><input type="checkbox" id="viewportOnly" /> Only classify what is on screen
-      <small>Elements outside the viewport (plus a 10% margin) are left alone until you scroll to them. Saves tokens on long pages; turn off to classify the whole page at once.</small>
+    <label><input type="checkbox" id="viewportOnly" /> Only classify what is near the screen
+      <small>Elements far below the viewport are left alone until you scroll toward them. Saves tokens on long pages; turn off to classify the whole page at once.</small>
+    </label>
+    <label>Look ahead (viewport heights)
+      <small>How far below the visible area to classify in advance, so ads are gone before you scroll to them instead of vanishing while you look. 1.5 means one and a half screens. Half a screen above is always covered.</small>
+      <input type="number" id="lookAhead" min="0" max="10" step="0.5" />
     </label>
     <label><input type="checkbox" id="screenshots" /> Screenshot each removed element
       <small>Just before an ad is removed, the visible tab is captured and cropped to the element, so the popup can show what went. Only works while the tab is the active one.</small>
