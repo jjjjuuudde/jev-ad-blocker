@@ -249,7 +249,7 @@
           const hits = [];
           for (const it of batch) {
             const p = res.probabilities[it.id] ?? 0;
-            remember(it.loose, p);
+            remember(it.loose, p, settings.threshold);
             if (settings.debug) console.log(`[jev-ad] ${p.toFixed(3)} ${it.summary}`, it.el);
             if (p >= settings.threshold && it.el.isConnected) hits.push({ it, p });
           }
@@ -321,7 +321,7 @@
       if (seen.has(el) || ignored.has(el) || takenOut.has(el)) continue;
       const tag = el.tagName.toLowerCase();
       if (SKIP_TAGS.has(tag) || TEXT_TAGS.has(tag)) continue;
-      const p = memory.get(looseKeyOf(el));
+      const p = recall(looseKeyOf(el));
       if (p === undefined) continue;
       seen.add(el);
       if (p < settings.threshold) continue;
@@ -333,21 +333,48 @@
     return n;
   }
 
-  function remember(key, p) {
+  // Two elements with the same key but verdicts on opposite sides of the
+  // threshold means the key isn't specific enough for them; forget it rather
+  // than let one verdict speak for both (a clean pin's entry hid, or unhid,
+  // an ad pin on Pinterest this way).
+  function remember(key, p, threshold) {
     if (!key) return;
+    const prev = memory.get(key);
+    if (prev !== undefined && Number.isNaN(prev)) return;
+    if (prev !== undefined && (prev >= threshold) !== (p >= threshold)) { memory.set(key, NaN); return; }
     if (memory.size >= MEMORY_MAX && !memory.has(key)) memory.delete(memory.keys().next().value); // drop the oldest
     memory.set(key, p);
   }
 
+  function recall(key) {
+    const p = memory.get(key);
+    return p === undefined || Number.isNaN(p) ? undefined : p;
+  }
+
   // What a re-created node shares with its previous incarnation: no ids
-  // (frameworks generate fresh ones), no position, no size.
+  // (frameworks generate fresh ones), no position, no size. Grid-item wrappers
+  // often have no text and identical classes, so the key also takes what is
+  // inside: link paths (a pin's own URL), image paths and alt text.
   function looseKeyOf(el) {
     const tag = el.tagName.toLowerCase();
     const cls = typeof el.className === "string" ? el.className.trim().replace(/\s+/g, " ").slice(0, MAX_ATTR) : "";
     const text = normText(el.textContent).slice(0, 100);
-    const src = tag === "img" || tag === "iframe" || tag === "video" ? hostOf(el.currentSrc || el.src || el.getAttribute("data-src")) : "";
-    const href = tag === "a" ? hostOf(el.href) : "";
-    return [tag, cls, text, src, href].join("|");
+    const own = tag === "img" || tag === "iframe" || tag === "video" ? pathOf(el.currentSrc || el.src || el.getAttribute("data-src")) : tag === "a" ? pathOf(el.href) : "";
+    const inner = [];
+    let alt = "";
+    for (const c of el.querySelectorAll("a[href], img, iframe[src]")) {
+      if (inner.length >= 3) break;
+      const ct = c.tagName.toLowerCase();
+      inner.push(pathOf(ct === "a" ? c.href : c.currentSrc || c.src));
+      if (!alt && ct === "img" && c.alt) alt = c.alt.slice(0, 60);
+    }
+    return [tag, cls, text, own, inner.join(","), alt].join("|");
+  }
+
+  // host + path, no query (tracking params change between mounts).
+  function pathOf(url) {
+    if (!url) return "";
+    try { const u = new URL(url, location.href); return (u.hostname + u.pathname).slice(0, 120); } catch { return ""; }
   }
 
   function stopWatching() {
@@ -486,10 +513,10 @@
         if (rect.width < MIN_SIZE_PX || rect.height < MIN_SIZE_PX) continue;
         if (view && !inView(el, view)) continue;
         const desc = describe(el);
-        if (!canBeAd(el, desc, rect)) { ignored.add(el); continue; }
+        if (!canBeAd(el, desc)) { ignored.add(el); continue; }
         seen.add(el);
         const loose = looseKeyOf(el);
-        const known = memory.get(loose);
+        const known = recall(loose);
         if (known !== undefined) {
           // Same element as one already judged on this page (a re-mounted node,
           // or a repeated component): reuse the verdict, no request.
@@ -508,20 +535,24 @@
   // Cheap structural filter: things that are never the ad themselves, so no
   // question is spent on them. Anything with an ad hint, media, an iframe, or
   // a link is always kept; jev makes the actual call on everything kept.
-  function canBeAd(el, d, rect) {
+  function canBeAd(el, d) {
     if (d.dataAd || (d.attrHints && d.attrHints.length)) return true;
     if (d.tag === "iframe" || d.tag === "img" || d.tag === "video" || d.tag === "a" || d.tag === "ins" || d.tag === "picture") return true;
+    // A wrapper with a single element child and no text of its own is just a
+    // layer around that child: classify the child (or whatever inside has
+    // real structure) and let the collapse pass take the layers out. Pinterest
+    // wraps every pin in a dozen of these, each "containing an image".
+    if (el.childElementCount === 1 && !hasOwnText(el)) return false;
     if (d.iframeHosts || d.imgHosts || d.linkHosts) return true;         // has media or links inside
     if (el.querySelector("iframe, img, video, picture, canvas, svg, a[href]")) return true; // big wrappers (>200 descendants) skip host scans
     if (TEXT_TAGS.has(d.tag)) return false;                              // text-level, no media: the container gets classified
     if (!d.descendants) return false;                                    // a leaf with only text
-    // A wrapper whose only element child fills the same box: classify the
-    // child, the wrapper adds nothing (and the collapse pass removes it anyway).
-    if (el.childElementCount === 1) {
-      const c = el.firstElementChild.getBoundingClientRect();
-      if (Math.abs(c.width - rect.width) < 2 && Math.abs(c.height - rect.height) < 2) return false;
-    }
     return true;
+  }
+
+  function hasOwnText(el) {
+    for (const n of el.childNodes) if (n.nodeType === 3 && n.nodeValue.trim()) return true;
+    return false;
   }
 
   // Rough "how much does this smell like an ad" score used only to order the
@@ -674,7 +705,7 @@
   function takeOut(el, action, label) {
     const rec = { el, parent: el.parentNode, next: el.nextSibling, prevDisplay: el.style.display, prevOutline: el.style.outline, prevOutlineOffset: el.style.outlineOffset, prevTitle: el.getAttribute("title"), action };
     if (action === "hide") {
-      el.style.setProperty("display", "none", "important");
+      hide(el, true);
     } else if (action === "outline") {
       outline(el, true);
       if (label) el.title = label;
@@ -684,6 +715,21 @@
     records.push(rec);
     takenOut.add(el);
     return records.length - 1;
+  }
+
+  // Hidden two ways: an attribute matched by a stylesheet the worker injects
+  // (frameworks that rewrite inline style don't touch unknown attributes),
+  // plus inline display:none for pages where the CSS injection failed.
+  const HIDDEN_ATTR = "data-jev-ad";
+  let cssRequested = false;
+  function hide(el, on) {
+    if (on) {
+      el.setAttribute(HIDDEN_ATTR, "hidden");
+      el.style.setProperty("display", "none", "important");
+      if (!cssRequested) { cssRequested = true; send({ type: "insertCss" }).catch(() => {}); }
+    } else {
+      el.removeAttribute(HIDDEN_ATTR);
+    }
   }
 
   function outline(el, on) {
@@ -715,7 +761,7 @@
     try {
       if (observer) observer.disconnect();
       for (const r of chain) {
-        if (r.action === "hide") r.el.style.display = r.prevDisplay;
+        if (r.action === "hide") { hide(r.el, false); r.el.style.display = r.prevDisplay; }
         else if (r.action === "remove") {
           if (r.next && r.next.parentNode === r.parent) r.parent.insertBefore(r.el, r.next);
           else r.parent.appendChild(r.el);
@@ -741,7 +787,7 @@
       for (const r of [...chain].reverse()) { // innermost first
         if (r.action === "outline") continue;   // outline is its normal state
         outline(r.el, false);
-        if (r.action === "hide") r.el.style.setProperty("display", "none", "important");
+        if (r.action === "hide") hide(r.el, true);
         else if (r.el.isConnected) r.el.remove();
       }
     } catch { /* gone */ } finally {
@@ -797,6 +843,7 @@
         if (rec.action === "outline") {
           if (rec.prevTitle == null) rec.el.removeAttribute("title"); else rec.el.setAttribute("title", rec.prevTitle);
         } else if (rec.action === "hide") {
+          hide(rec.el, false);
           rec.el.style.display = rec.prevDisplay;
         } else if (rec.parent && rec.parent.isConnected) {
           if (rec.next && rec.next.parentNode === rec.parent) rec.parent.insertBefore(rec.el, rec.next);

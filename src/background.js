@@ -86,6 +86,14 @@ const handlers = {
     return { stats: data[key] || null };
   },
 
+  // Stylesheet behind the hide attribute, injected per tab (survives page CSP).
+  async insertCss(msg, sender) {
+    const tabId = sender.tab && sender.tab.id;
+    if (tabId == null) return {};
+    await chrome.scripting.insertCSS({ target: { tabId, allFrames: false }, css: "[data-jev-ad=\"hidden\"]{display:none !important}" }).catch(() => {});
+    return {};
+  },
+
   // Content script, at the start of a pass: capture the visible tab and keep
   // it, so removed elements can be cropped out of it afterwards.
   async capture(msg, sender) {

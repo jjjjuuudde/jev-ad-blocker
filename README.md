@@ -61,10 +61,10 @@ Elements are taken in document order. By default only the ones in a band around 
 jev allows 1,200 requests a minute and 250,000 tokens a second; requests are the tight one. Four things keep the count down:
 
 - **Big batches.** Up to 200 questions per request, closed early at an estimated 32k input tokens (jev rejects requests somewhere above 40k with `max_tokens_exceeded`; a real element with its question costs 250-400 tokens, so a batch is usually 80-120 elements). If jev still rejects one, the worker halves it and retries both halves.
-- **Candidate filter.** Text-level elements (`span`, `p`, headings, list items, ...), text-only leaves, anything under 20 px, and wrappers whose only child fills the same box are never sent; the container around them is. Anything with an ad hint, media, an iframe or a link is always sent. On a YouTube page this cuts the questions by well over half.
+- **Candidate filter.** Text-level elements (`span`, `p`, headings, list items, ...), text-only leaves, anything under 20 px, and wrappers with a single element child and no text of their own are never sent; the element with real structure inside (or the container around them) is, and the collapse pass takes the layers out with it. On Pinterest, where every pin sits in a dozen such layers, this cut 397 candidates to 94 for twelve pins. Anything with an ad hint, media, an iframe or a link is always sent. On a YouTube page this cuts the questions by well over half.
 - **Rate limiter.** The worker runs one token bucket (15 requests a second) across every tab and honours jev's `Retry-After` on a 429, so retries don't pile up.
 - **Confident cache.** A confident verdict either way (p < 0.2, or p at or above the removal threshold) is reused for 60 minutes; navigating within a single-page site only sends the new elements.
-- **Page memory.** Within a page, every verdict is also remembered by a loose signature (tag, classes, text, hosts, no ids). Virtualised lists such as Pinterest's grid unmount pins as you scroll away and create fresh nodes when you scroll back; those get their verdict re-applied synchronously in the mutation observer, before the site can paint them, with no request.
+- **Page memory.** Within a page, every verdict is also remembered by a loose signature (tag, classes, text, the paths of the first links and images inside, alt text; no ids or positions). If two elements share a key but get verdicts on opposite sides of the threshold, the key is forgotten rather than trusted. Virtualised lists such as Pinterest's grid unmount pins as you scroll away and create fresh nodes when you scroll back; those get their verdict re-applied synchronously in the mutation observer, before the site can paint them, with no request.
 
 ## When it runs
 
@@ -72,7 +72,7 @@ The first pass starts as soon as the DOM is parsed (Chrome's `document_idle`), n
 
 ## Why hide, not remove
 
-The default action is `display: none` in place. Sites built on React, Vue and similar keep their own model of the DOM; if the extension detaches a node they manage, their next update calls `removeChild` on a child that is no longer there, the error propagates, and the framework unmounts the page (Pinterest went blank this way). Hiding leaves the node where the framework expects it. `remove` is still available in options for plain pages.
+The default action is `display: none` in place, set both as a `data-jev-ad="hidden"` attribute (matched by a stylesheet the worker injects with `chrome.scripting.insertCSS`, immune to the page's CSP and to frameworks rewriting inline style) and as an inline style. Sites built on React, Vue and similar keep their own model of the DOM; if the extension detaches a node they manage, their next update calls `removeChild` on a child that is no longer there, the error propagates, and the framework unmounts the page (Pinterest went blank this way). Hiding leaves the node where the framework expects it. `remove` is still available in options for plain pages.
 
 ## Protected elements
 
