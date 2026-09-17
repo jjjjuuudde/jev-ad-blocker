@@ -29,7 +29,7 @@ A personal Chrome extension. On every page load it walks the rendered elements o
 
 4. Open the options page (click the extension icon, then **Options**) and hit **Test key** to confirm jev answers.
 
-Whenever you change the key, run `npm run sync-key` again and click the reload icon on the extension's card in `chrome://extensions`.
+Whenever you change the key or pull new code, run `npm run sync-key` again and click the reload icon on the extension's card in `chrome://extensions`. The worker then re-injects the content script into every open tab, so you don't have to reload them.
 
 ## How it decides
 
@@ -45,12 +45,16 @@ Defaults (all adjustable on the options page):
 | Remove empty wrappers | on | takes out the ad's container once it has no text or media left |
 | Max elements per load | 0 (no cap) | every rendered element goes to jev; set a number to stop early on huge pages |
 | Elements per request | 25 | one request, 25 questions |
-| Requests in flight | 3 | |
+| Requests in flight | 6 | jev allows 1,200 requests a minute |
 | Action | remove (restorable) | "hide" and "outline" (testing: red border, keeps the ad) are available |
 | Only classify what is on screen | on | elements are classified as they scroll into view |
 | Text-share safety rail | 50% | never removes an element holding more than half the page's text |
 
-Elements are taken in document order. By default only the ones intersecting the viewport (plus a 25% margin) are sent on load; the rest are classified as they scroll into view, so a long page costs only what you actually look at. Turn **Only classify what is on screen** off to do the whole page at once (a busy news page is a few thousand elements, roughly 100 requests). Anything not rendered (`display: none`, zero rects), `script`/`style`/`head` and SVG internals are skipped. When a parent is removed, its children are dropped from later batches instead of being classified.
+Elements are taken in document order. By default only the ones intersecting the viewport (plus a 10% margin) are sent on load; the rest are classified as they scroll into view, so a long page costs only what you actually look at. Turn **Only classify what is on screen** off to do the whole page at once (a busy news page is a few thousand elements, roughly 100 requests). Anything not rendered (`display: none`, zero rects), `script`/`style`/`head` and SVG internals are skipped. When a parent is removed, its children are dropped from later batches instead of being classified.
+
+## When it runs
+
+The first pass starts as soon as the DOM is parsed (Chrome's `document_idle`), not at the window `load` event, which on heavy pages can be many seconds away. Within a pass, elements that look like ads (ad attributes, iframes, off-site links or images) are sent first, so they usually go in the first round trip. Elements that render later are picked up by the DOM watcher (added nodes, 250 ms debounce), a scroll listener in capture phase (so inner scroll containers count too), a ResizeObserver on `<body>` (layout changes without a DOM change, such as an ad slot growing when its iframe loads), and settle sweeps at 0, 1 and 3 seconds after `load`. Pages Chrome prerendered wait until they become the real page; pages restored from the back/forward cache get a fresh full pass.
 
 ## Single-page sites
 
@@ -68,7 +72,7 @@ jev lists [$0.042 per million input tokens, output free](https://docs.typesafe.a
 
 ## Popup
 
-The toolbar icon shows what happened on the current tab: how many elements were classified (and how many were added after load), what was removed (with jev's probability, or `wrap` for an emptied wrapper), the cost, and anything the safety rail refused to remove. Each removed entry shows a screenshot of the element as it looked just before removal (the worker captures the visible tab once per batch and crops it; the tab has to be the active one, and the element on screen). Each entry also has a **Show** button that puts the element back for three seconds with a red outline, scrolled into view, and an expandable **HTML** snippet of what was removed. To see every verdict in place, set the action to **Outline** in options: ads then stay on the page with a red border and jev's score in the tooltip. **Restore removed** puts everything back; **Rescan page** runs the pass again; the checkbox disables the extension for that site.
+The toolbar icon shows what happened on the current tab: how many elements were classified (and how many were added after load), what was removed (with jev's probability, or `wrap` for an emptied wrapper), the cost, and anything the safety rail refused to remove. Each removed entry shows a screenshot of the element (the worker captures the visible tab once at the start of each pass and crops it afterwards, so removal never waits on it; the tab has to be the active one, and the element on screen). Each entry also has a **Show** button that puts the element back for three seconds with a red outline, scrolled into view, and an expandable **HTML** snippet of what was removed. To see every verdict in place, set the action to **Outline** in options: ads then stay on the page with a red border and jev's score in the tooltip. **Restore removed** puts everything back; **Rescan page** runs the pass again; the checkbox disables the extension for that site.
 
 ## Development
 

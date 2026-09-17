@@ -11,8 +11,8 @@ export const DEFAULT_SETTINGS = {
   maxElements: 0,
   // How many elements ride in one jev request (one noul question each).
   batchSize: 25,
-  // Requests in flight at once.
-  concurrency: 3,
+  // Requests in flight at once (jev allows 1,200 requests a minute).
+  concurrency: 6,
   // "remove" detaches the node (restorable from the popup), "hide" sets
   // display:none, "outline" leaves it in place with a red border and jev's
   // score in its tooltip (for checking what would be removed).

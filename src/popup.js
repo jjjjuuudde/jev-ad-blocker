@@ -11,7 +11,7 @@ async function init() {
   $("site").textContent = host || "(no site)";
   $("site").title = tab.url || "";
 
-  const settings = await getSettings();
+  settings = await getSettings();
   $("siteToggle").checked = settings.enabled && !settings.disabledSites.includes(host);
   $("siteToggle").disabled = !host;
 
@@ -34,9 +34,10 @@ async function refresh() {
   render(res.stats);
 }
 
+let settings = {};
 function render(s) {
   const labels = {
-    idle: "Waiting for page load",
+    idle: "Starting...",
     scanning: "Scanning...",
     done: "Done, watching",
     disabled: "Disabled on this site",
@@ -46,7 +47,7 @@ function render(s) {
   $("status").innerHTML = `<span>${labels[s.status] || s.status}</span><span>${s.requests} request${s.requests === 1 ? "" : "s"}</span>`;
   const capped = Boolean(s.capped);
   $("counts").textContent =
-    `${s.scanned} element${s.scanned === 1 ? "" : "s"} classified` +
+    `${s.scanned} element${s.scanned === 1 ? "" : "s"} classified${settings.viewportOnly ? " in view" : ""}` +
     (s.cached ? ` (${s.cached} from cache)` : "") +
     (s.late ? ` (${s.late} added after load)` : "") +
     ` of ${s.totalElements} on the page` +

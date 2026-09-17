@@ -19,11 +19,12 @@
   const MAX_TEXT = 200;
   const MAX_ATTR = 120;
   const MAX_HTML = 800;            // outerHTML snippet kept per removed element, for the popup
-  const WATCH_DEBOUNCE_MS = 600;
-  const SCROLL_DEBOUNCE_MS = 300;
-  const VIEWPORT_MARGIN = 0.25;    // classify a little beyond the visible area (fraction of viewport size)
+  const WATCH_DEBOUNCE_MS = 250;   // let a burst of DOM insertions settle before classifying
+  const SCROLL_DEBOUNCE_MS = 150;
+  const VIEWPORT_MARGIN = 0.1;     // classify a little beyond the visible area (fraction of viewport size)
   const PEEK_MS = 3000;
   const NAV_DEBOUNCE_MS = 800;     // single-page apps change the URL, then fill the page in
+  const SETTLE_DELAYS_MS = [0, 1000, 3000]; // extra in-view sweeps after the load event
   const SHOTS_KEPT = 40;           // screenshots kept in the stats (they go through storage.session)
 
   const state = {
@@ -53,6 +54,7 @@
   let watchTimer = 0;
   let scrollTimer = 0;
   let scrollHooked = false;
+  let resizeObserver = null;
   let peeking = null;            // { rec, timer } while an element is temporarily shown
   let queuedRun = false;         // a full pass was asked for while one was running
   let lastHref = location.href;
@@ -110,6 +112,7 @@
     if (!settings.enabled || settings.disabledSites.includes(location.hostname)) {
       state.status = "disabled";
       stopWatching();
+      unhookScroll();
       return null;
     }
     if (!cfg.hasKey) {
@@ -143,6 +146,7 @@
       // (they run as an incremental pass once this one finishes).
       if (ctx.settings.watchDom) startWatching(); else stopWatching();
       if (ctx.settings.viewportOnly) hookScroll(); else unhookScroll();
+      requestCapture(ctx.settings);
       const candidates = collect(ctx.settings, [document.body]);
       state.totalElements = candidates.total;
       state.capped = candidates.capped;
@@ -174,6 +178,7 @@
     try {
       const ctx = await prepare();
       if (!ctx) return;
+      requestCapture(ctx.settings);
       const candidates = collect(ctx.settings, roots);
       state.totalElements = candidates.total;
       state.capped = state.capped || candidates.capped;
@@ -196,7 +201,9 @@
   }
 
   async function classifyAll({ settings, page }, candidates) {
-    const items = candidates.items;
+    // Likely ads first, so they go in the first round trip instead of waiting
+    // behind hundreds of ordinary elements.
+    const items = candidates.items.map((it, i) => ({ it, i })).sort((a, b) => (b.it.priority - a.it.priority) || (a.i - b.i)).map((x) => x.it);
     const batches = [];
     for (let i = 0; i < items.length; i += settings.batchSize) batches.push(items.slice(i, i + settings.batchSize));
 
@@ -226,9 +233,10 @@
             if (p >= settings.threshold && it.el.isConnected) hits.push({ it, p });
           }
           if (!hits.length) continue;
-          // Photograph the ads before they go, so the popup can show what was removed.
-          const shots = settings.screenshots && settings.action !== "outline" ? await captureShots(hits.map((h) => h.it.el)) : null;
-          hits.forEach((h, i) => act(h.it, h.p, settings, candidates.textTotal, shots ? shots[i] : null));
+          const entries = hits.map((h) => act(h.it, h.p, settings, candidates.textTotal));
+          // The thumbnails come from the capture taken at pass start, cropped to
+          // where each element was; removal doesn't wait for them.
+          if (settings.screenshots && settings.action !== "outline") cropShots(hits, entries).catch(() => {});
         } catch (err) {
           state.errors.push(err.message || String(err));
           if (settings.debug) console.warn("[jev-ad] batch failed", err);
@@ -265,18 +273,28 @@
 
   // Viewport-only mode: as the user scrolls, elements that come into view are
   // classified in an incremental pass (anything already classified is skipped).
+  // Capture phase: scroll events don't bubble, and many sites scroll an inner
+  // container rather than the window. A ResizeObserver on <body> catches
+  // layout changes that happen without a DOM change (an ad slot growing once
+  // its iframe loads, a lazy image getting its size).
   function hookScroll() {
     if (scrollHooked) return;
     scrollHooked = true;
-    addEventListener("scroll", onScroll, { passive: true });
+    addEventListener("scroll", onScroll, { passive: true, capture: true });
     addEventListener("resize", onScroll, { passive: true });
+    if (typeof ResizeObserver === "function" && document.body) {
+      resizeObserver = new ResizeObserver(onScroll);
+      resizeObserver.observe(document.body);
+    }
   }
 
   function unhookScroll() {
     if (!scrollHooked) return;
     scrollHooked = false;
-    removeEventListener("scroll", onScroll);
+    removeEventListener("scroll", onScroll, { capture: true });
     removeEventListener("resize", onScroll);
+    if (resizeObserver) resizeObserver.disconnect();
+    resizeObserver = null;
     clearTimeout(scrollTimer);
     scrollTimer = 0;
   }
@@ -317,24 +335,29 @@
 
   // ---------- screenshots ----------
 
-  // One capture of the visible tab (done by the worker), cropped to each
-  // element's on-screen rect. Returns an array aligned with `els`, entries null
-  // when the element wasn't on screen or the capture failed.
-  async function captureShots(els) {
-    const rects = els.map((el) => {
-      const r = el.getBoundingClientRect();
-      const left = Math.max(0, r.left), top = Math.max(0, r.top);
-      const right = Math.min(innerWidth, r.right), bottom = Math.min(innerHeight, r.bottom);
-      if (right - left < 8 || bottom - top < 8) return null;
-      return { left, top, width: right - left, height: bottom - top };
-    });
-    if (!rects.some(Boolean)) return null;
-    try {
-      const res = await send({ type: "captureRegions", rects, dpr: devicePixelRatio || 1 });
-      return res.shots || null;
-    } catch {
-      return null;
-    }
+  // The worker captures the visible tab once at the start of a pass (not
+  // awaited: removal must not wait on it). Each removed element is later
+  // cropped out of that capture at the rect it had when collected, which is
+  // the same moment the capture was taken.
+  function requestCapture(settings) {
+    if (!settings.screenshots || settings.action === "outline") return;
+    send({ type: "capture" }).catch(() => {});
+  }
+
+  function visibleRect(r) {
+    const left = Math.max(0, r.left), top = Math.max(0, r.top);
+    const right = Math.min(innerWidth, r.right), bottom = Math.min(innerHeight, r.bottom);
+    if (right - left < 8 || bottom - top < 8) return null;
+    return { left, top, width: right - left, height: bottom - top };
+  }
+
+  async function cropShots(hits, entries) {
+    const rects = hits.map((h) => h.it.rect);
+    if (!rects.some(Boolean)) return;
+    const res = await send({ type: "cropRegions", rects, dpr: devicePixelRatio || 1 });
+    const shots = res.shots || [];
+    entries.forEach((entry, i) => { if (entry && shots[i]) entry.shot = shots[i]; });
+    report();
   }
 
   // ---------- element collection ----------
@@ -356,10 +379,22 @@
         seen.add(el);
         const desc = describe(el);
         const id = `e${nextId++}`;
-        items.push({ el, id, desc, sig: signature(desc), summary: summarize(el, desc) });
+        items.push({ el, id, desc, sig: signature(desc), summary: summarize(el, desc), rect: visibleRect(el.getBoundingClientRect()), priority: adPriority(desc) });
       }
     }
     return { items, total, textTotal, capped };
+  }
+
+  // Rough "how much does this smell like an ad" score used only to order the
+  // queue; jev still makes the call.
+  function adPriority(d) {
+    if (d.dataAd || (d.attrHints && d.attrHints.length)) return 3;
+    if (d.tag === "iframe") return 3;
+    const here = location.hostname;
+    const offSite = (hosts) => (hosts || []).some((h) => h && h !== here && !here.endsWith(`.${h}`) && !h.endsWith(`.${here}`));
+    if (d.iframeHosts && d.iframeHosts.length) return 2;
+    if (offSite(d.linkHosts) || offSite(d.imgHosts)) return 1;
+    return 0;
   }
 
   function viewportBox() {
@@ -470,20 +505,23 @@
 
   // ---------- acting on verdicts ----------
 
-  function act(item, p, settings, textTotal, shot) {
+  // Returns the popup entry for the removed element (null if nothing was done).
+  function act(item, p, settings, textTotal) {
     const el = item.el;
-    if (!el.isConnected) return;
-    if (el === document.body || el === document.documentElement) return;
+    if (!el.isConnected) return null;
+    if (el === document.body || el === document.documentElement) return null;
     const ownText = normText(el.textContent).length;
     if (textTotal > 200 && ownText / textTotal > settings.maxTextShare) {
       state.skipped.push({ id: item.id, summary: item.summary, p, reason: `holds ${Math.round((ownText / textTotal) * 100)}% of the page text` });
-      return;
+      return null;
     }
     const parent = el.parentElement;
     const key = takeOut(el, settings.action, `jev ad blocker: ad, p=${p.toFixed(2)}`);
-    state.removed.push({ key, id: item.id, summary: item.summary, p: Number(p.toFixed(3)), action: settings.action, html: htmlSnippet(el), shot: shot || null });
+    const entry = { key, id: item.id, summary: item.summary, p: Number(p.toFixed(3)), action: settings.action, html: htmlSnippet(el), shot: null };
+    state.removed.push(entry);
     // In outline mode the ad stays on the page, so its wrapper is never empty.
     if (settings.collapseEmptyWrappers && settings.action !== "outline") collapseEmptyAncestors(parent, settings.action);
+    return entry;
   }
 
   // Remove, hide, or (for testing) outline one element, remembering enough to
@@ -524,38 +562,46 @@
     const rec = records[key];
     if (!rec) return false;
     if (peeking) endPeek();
+    // If the ad's wrapper(s) were collapsed as well, they have to come back
+    // first (outermost first) or there is nowhere to put the ad.
+    const chain = [];
+    for (let r = rec; r; r = r.action === "remove" && r.parent && !r.parent.isConnected ? records.find((o) => o.el === r.parent) : null) chain.unshift(r);
+    if (chain[0].action === "remove" && (!chain[0].parent || !chain[0].parent.isConnected)) return false;
     try {
-      if (rec.action === "hide") rec.el.style.display = rec.prevDisplay;
-      else if (rec.action === "remove") {
-        if (!rec.parent || !rec.parent.isConnected) return false;
-        if (observer) observer.disconnect();
-        if (rec.next && rec.next.parentNode === rec.parent) rec.parent.insertBefore(rec.el, rec.next);
-        else rec.parent.appendChild(rec.el);
-        if (observer && document.body) observer.observe(document.body, { childList: true, subtree: true });
+      if (observer) observer.disconnect();
+      for (const r of chain) {
+        if (r.action === "hide") r.el.style.display = r.prevDisplay;
+        else if (r.action === "remove") {
+          if (r.next && r.next.parentNode === r.parent) r.parent.insertBefore(r.el, r.next);
+          else r.parent.appendChild(r.el);
+        }
       }
       outline(rec.el, true);
       rec.el.scrollIntoView({ block: "center", behavior: "smooth" });
-    } catch { return false; }
-    peeking = { rec, timer: setTimeout(endPeek, PEEK_MS) };
+    } catch { return false; } finally {
+      if (observer && document.body) observer.observe(document.body, { childList: true, subtree: true });
+    }
+    peeking = { chain, timer: setTimeout(endPeek, PEEK_MS) };
     return true;
   }
 
   function endPeek() {
     if (!peeking) return;
-    const { rec, timer } = peeking;
+    const { chain, timer } = peeking;
     clearTimeout(timer);
     peeking = null;
-    if (!records.includes(rec)) return; // restored meanwhile; leave it as it is
+    if (!records.includes(chain[chain.length - 1])) return; // restored meanwhile; leave it as it is
     try {
-      if (rec.action === "outline") return; // outline is its normal state
-      outline(rec.el, false);
-      if (rec.action === "hide") rec.el.style.setProperty("display", "none", "important");
-      else if (rec.el.isConnected) {
-        if (observer) observer.disconnect();
-        rec.el.remove();
-        if (observer && document.body) observer.observe(document.body, { childList: true, subtree: true });
+      if (observer) observer.disconnect();
+      for (const r of [...chain].reverse()) { // innermost first
+        if (r.action === "outline") continue;   // outline is its normal state
+        outline(r.el, false);
+        if (r.action === "hide") r.el.style.setProperty("display", "none", "important");
+        else if (r.el.isConnected) r.el.remove();
       }
-    } catch { /* gone */ }
+    } catch { /* gone */ } finally {
+      if (observer && document.body) observer.observe(document.body, { childList: true, subtree: true });
+    }
   }
 
   // An ad usually sits in a wrapper the site styled (fixed bar, grey box,
@@ -643,7 +689,31 @@
 
   // ---------- go ----------
 
-  watchUrl();
-  if (document.readyState === "complete") run("load");
-  else window.addEventListener("load", () => run("load"), { once: true });
+  // Sweep the page for rendered, in-view elements that haven't been classified
+  // yet. Cheap (already-classified elements are skipped), so it's safe to run
+  // a few times while a page settles.
+  function sweep() {
+    if (paused || !document.body) return;
+    pendingRoots.add(document.body);
+    scheduleIncremental();
+  }
+
+  function start() {
+    watchUrl();
+    // Back/forward can restore a page from the cache with no load event.
+    addEventListener("pageshow", (e) => { if (e.persisted) run("bfcache").catch(() => {}); });
+    // Don't wait for window.load: on heavy pages it can be many seconds away.
+    // The DOM is parsed at document_idle, so start now and let the watcher,
+    // the scroll handler and the settle sweeps pick up what renders later
+    // (ad slots that get their size once an iframe or image lands, etc.).
+    run("load").catch(() => {});
+    const settle = () => { for (const ms of SETTLE_DELAYS_MS) setTimeout(sweep, ms); };
+    if (document.readyState === "complete") settle();
+    else addEventListener("load", settle, { once: true });
+  }
+
+  // Chrome may prerender a page before the user actually lands on it; nothing
+  // is laid out yet, so wait until it becomes the real page.
+  if (document.prerendering) addEventListener("prerenderingchange", start, { once: true });
+  else start();
 })();

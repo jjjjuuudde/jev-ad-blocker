@@ -3,7 +3,7 @@
   "name": "jev ad blocker",
   "version": "0.1.0",
   "description": "Walks the elements on each page, asks jev whether each one is an ad, and removes the ones jev is confident about.",
-  "permissions": ["storage", "activeTab"],
+  "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": ["https://api.typesafe.ai/*", "http://*/*", "https://*/*"],
   "background": {
     "service_worker": "src/background.js",

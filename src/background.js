@@ -75,14 +75,23 @@ const handlers = {
     return { stats: data[key] || null };
   },
 
-  // Content script, just before removing elements: one capture of the visible
-  // tab, cropped to each rect (CSS px, viewport-relative) -> small JPEG data URLs.
-  async captureRegions(msg, sender) {
+  // Content script, at the start of a pass: capture the visible tab and keep
+  // it, so removed elements can be cropped out of it afterwards.
+  async capture(msg, sender) {
     const tab = sender.tab;
-    if (!tab || !tab.active) return { shots: null }; // captureVisibleTab only sees the active tab
-    const bitmap = await captureTab(tab);
-    if (!bitmap) return { shots: null };
+    if (!tab || !tab.active) return { ok: false }; // captureVisibleTab only sees the active tab
+    await captureTab(tab);
+    return {};
+  },
+
+  // Crop rects (CSS px, viewport-relative, measured when the capture was
+  // requested) out of that tab's last capture -> small JPEG data URLs.
+  async cropRegions(msg, sender) {
+    const tab = sender.tab;
+    if (!tab || lastCapture.tabId !== tab.id || !lastCapture.bitmap) return { shots: null };
+    if (Date.now() - lastCapture.at > CAPTURE_MAX_AGE_MS) return { shots: null };
     const dpr = Number(msg.dpr) || 1;
+    const bitmap = lastCapture.bitmap;
     const shots = await Promise.all((msg.rects || []).map((r) => (r ? crop(bitmap, r, dpr) : null)));
     return { shots };
   },
@@ -113,6 +122,7 @@ const handlers = {
 // spaced out, and batches that finish together share one capture.
 const CAPTURE_MIN_GAP_MS = 600;
 const CAPTURE_FRESH_MS = 400;
+const CAPTURE_MAX_AGE_MS = 30000; // crops older than this would show a page that has since changed
 const SHOT_MAX_PX = 400;
 let lastCapture = { tabId: null, at: 0, bitmap: null, promise: null };
 
@@ -155,6 +165,18 @@ async function crop(bitmap, r, dpr) {
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
   return `data:image/jpeg;base64,${btoa(bin)}`;
 }
+
+// Chrome only injects content scripts into pages loaded after the extension
+// was (re)loaded; tabs already open keep running the old script until they're
+// reloaded. Inject into them here so a reload at chrome://extensions is enough.
+chrome.runtime.onInstalled.addListener(async () => {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] }); } catch { return; }
+  for (const tab of tabs) {
+    if (tab.id == null || tab.discarded) continue;
+    chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: false }, files: ["src/content.js"] }).catch(() => {});
+  }
+});
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.storage.session.remove(`tab:${tabId}`).catch(() => {});
