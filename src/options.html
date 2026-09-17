@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>jev ad blocker options</title>
+  <style>
+    :root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; }
+    body { max-width: 640px; margin: 24px auto; padding: 0 16px; }
+    h1 { font-size: 20px; }
+    fieldset { border: 1px solid #8884; border-radius: 8px; margin: 16px 0; padding: 12px 16px; }
+    legend { padding: 0 6px; font-weight: 600; }
+    label { display: block; margin: 10px 0; }
+    label small { display: block; opacity: .7; }
+    input[type=text], input[type=password], input[type=number], select, textarea { font: inherit; width: 100%; box-sizing: border-box; padding: 6px 8px; }
+    input[type=number] { width: 120px; }
+    button { font: inherit; padding: 6px 12px; cursor: pointer; margin-right: 8px; }
+    .msg { margin-top: 8px; min-height: 1.5em; }
+    .ok { color: #16a34a; } .err { color: #dc2626; }
+    code { background: #8882; padding: 1px 4px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <h1>jev ad blocker</h1>
+
+  <fieldset>
+    <legend>API key</legend>
+    <p id="keySource"></p>
+    <label>Override key (optional)
+      <small>Paste your key here if you don't want to use <code>.env</code> + <code>npm run sync-key</code>. Stored only in this browser profile.</small>
+      <input type="password" id="apiKey" placeholder="ts-..." autocomplete="off" />
+    </label>
+    <button id="saveKey">Save key</button>
+    <button id="clearKey">Use .env key instead</button>
+    <button id="testKey">Test key</button>
+    <div class="msg" id="keyMsg"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Classification</legend>
+    <label>Remove when jev's probability is at least
+      <small>jev's noul answer is the probability the element is an ad. 0.9 is jev's "act automatically" line; lower it to block more aggressively.</small>
+      <input type="number" id="threshold" min="0.5" max="1" step="0.01" />
+    </label>
+    <label>Max elements per page load
+      <small>Elements are taken in document order until this cap. 0 means no cap (every element, which can cost a lot on big pages).</small>
+      <input type="number" id="maxElements" min="0" step="50" />
+    </label>
+    <label>Elements per request
+      <small>Each element is one question in a single jev call; more per request means fewer round trips.</small>
+      <input type="number" id="batchSize" min="1" max="100" />
+    </label>
+    <label>Requests in flight
+      <input type="number" id="concurrency" min="1" max="8" />
+    </label>
+    <label>Model
+      <input type="text" id="model" />
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Behaviour</legend>
+    <label>What to do with an ad
+      <select id="action">
+        <option value="remove">Remove it from the page (restorable from the popup)</option>
+        <option value="hide">Hide it (display: none)</option>
+      </select>
+    </label>
+    <label>Never remove an element holding more than this share of the page text
+      <small>Stops a wrongly-flagged wrapper from blanking the page.</small>
+      <input type="number" id="maxTextShare" min="0.05" max="1" step="0.05" />
+    </label>
+    <label>Disabled on these sites (one hostname per line)
+      <textarea id="disabledSites" rows="4"></textarea>
+    </label>
+    <label><input type="checkbox" id="debug" /> Log every element and verdict to the page console</label>
+    <label><input type="checkbox" id="enabled" /> Extension enabled</label>
+  </fieldset>
+
+  <button id="save">Save settings</button>
+  <button id="reset">Reset to defaults</button>
+  <button id="clearCache">Clear verdict cache</button>
+  <div class="msg" id="msg"></div>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

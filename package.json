@@ -1,0 +1,14 @@
+{
+  "name": "jev-ad",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal Chrome extension that asks jev whether each page element is an ad and removes the confident ones.",
+  "type": "module",
+  "scripts": {
+    "sync-key": "node scripts/sync-key.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check src/content.js && node --check src/popup.js && node --check src/options.js && node --check src/background.js && node --check src/jev.js",
+    "e2e": "node test/e2e.mjs",
+    "zip": "node scripts/zip.mjs"
+  }
+}
