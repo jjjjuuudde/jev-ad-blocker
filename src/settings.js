@@ -38,14 +38,25 @@ export async function saveSettings(patch) {
   return next;
 }
 
+/**
+ * The key `npm run sync-key` wrote to src/config.local.js, or "" if it hasn't
+ * been synced. Read with fetch rather than import(): Chrome forbids dynamic
+ * import() inside the MV3 service worker, and fetch works in every context.
+ */
+export async function getSyncedKey() {
+  try {
+    const res = await fetch(chrome.runtime.getURL("src/config.local.js"));
+    if (!res.ok) return "";
+    const match = (await res.text()).match(/TYPESAFE_API_KEY\s*=\s*("(?:[^"\\]|\\.)*")/);
+    return match ? JSON.parse(match[1]) : "";
+  } catch {
+    return "";
+  }
+}
+
 /** Key precedence: the one saved from the options page, else the one synced from .env. */
 export async function getApiKey() {
   const { apiKey } = await chrome.storage.local.get("apiKey");
   if (apiKey) return apiKey;
-  try {
-    const mod = await import("./config.local.js");
-    return mod.TYPESAFE_API_KEY || "";
-  } catch {
-    return "";
-  }
+  return getSyncedKey();
 }

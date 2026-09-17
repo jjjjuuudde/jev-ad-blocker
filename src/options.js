@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, getSettings, saveSettings } from "./settings.js";
+import { DEFAULT_SETTINGS, getSettings, saveSettings, getSyncedKey } from "./settings.js";
 
 const $ = (id) => document.getElementById(id);
 const FIELDS = ["threshold", "maxElements", "batchSize", "concurrency", "model", "action", "maxTextShare", "debug", "enabled"];
@@ -16,8 +16,7 @@ async function load() {
 
 async function describeKey() {
   const { apiKey } = await chrome.storage.local.get("apiKey");
-  let envKey = "";
-  try { envKey = (await import("./config.local.js")).TYPESAFE_API_KEY || ""; } catch { /* not synced yet */ }
+  const envKey = await getSyncedKey();
   if (apiKey) $("keySource").textContent = `Using the key saved here (ends in ...${apiKey.slice(-4)}).`;
   else if (envKey) $("keySource").textContent = `Using the key synced from .env (ends in ...${envKey.slice(-4)}).`;
   else $("keySource").textContent = "No key found. Paste it into .env and run `npm run sync-key`, then reload the extension, or save one below.";
