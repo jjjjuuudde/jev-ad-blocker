@@ -58,10 +58,7 @@ const handlers = {
 
     let usage = null;
     if (pending.length) {
-      const res = await classifyBatch(
-        { apiKey, page: msg.page, elements: pending, model: settings.model, apiUrl: settings.apiUrl },
-        { fetchImpl: limitedFetch }
-      );
+      const res = await classifySplitting({ apiKey, page: msg.page, elements: pending, model: settings.model, apiUrl: settings.apiUrl });
       usage = res.usage;
       for (const el of pending) {
         const p = res.probabilities[el.id];
@@ -129,6 +126,24 @@ const handlers = {
     return { probability: res.probabilities.e0, model: res.model, usage: res.usage };
   },
 };
+
+// The content script sizes batches by an estimate; if jev still says a
+// request is over its token ceiling, halve it and try both halves.
+async function classifySplitting(req) {
+  try {
+    return await classifyBatch(req, { fetchImpl: limitedFetch });
+  } catch (err) {
+    if (!(err && err.tooBig) || req.elements.length < 2) throw err;
+    const mid = Math.ceil(req.elements.length / 2);
+    const a = await classifySplitting({ ...req, elements: req.elements.slice(0, mid) });
+    const b = await classifySplitting({ ...req, elements: req.elements.slice(mid) });
+    const usage = a.usage || b.usage ? {
+      input_tokens: ((a.usage && a.usage.input_tokens) || 0) + ((b.usage && b.usage.input_tokens) || 0),
+      output_tokens: ((a.usage && a.usage.output_tokens) || 0) + ((b.usage && b.usage.output_tokens) || 0),
+    } : null;
+    return { probabilities: { ...a.probabilities, ...b.probabilities }, usage, model: a.model || b.model };
+  }
+}
 
 // Chrome allows about two captureVisibleTab calls per second, so captures are
 // spaced out, and batches that finish together share one capture.

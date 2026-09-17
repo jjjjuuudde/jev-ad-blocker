@@ -49,6 +49,10 @@
       <small>Each element is one question in a single jev call. jev answers 400 in about a second, and its rate limit (1,200 a minute) counts requests, so bigger is better.</small>
       <input type="number" id="batchSize" min="1" max="400" />
     </label>
+    <label>Token budget per request
+      <small>A batch also closes when its estimated input tokens would pass this. jev rejects requests above roughly 40k input tokens with <code>max_tokens_exceeded</code>; if you see that in the popup, lower this.</small>
+      <input type="number" id="batchTokens" min="1000" max="60000" step="1000" />
+    </label>
     <label>Requests in flight
       <input type="number" id="concurrency" min="1" max="8" />
     </label>

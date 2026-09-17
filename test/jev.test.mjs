@@ -117,3 +117,13 @@ test("makeLimiter spaces requests to the bucket rate and pauses on 429 Retry-Aft
   await f("ok");
   assert.ok(clock - before >= 3000, `expected a 3 s pause, got ${clock - before} ms`);
 });
+
+test("classifyBatch flags jev's max_tokens_exceeded 400 as tooBig without retrying", async () => {
+  let calls = 0;
+  const fetchImpl = async () => { calls++; return { ok: false, status: 400, headers: { get: () => null }, text: async () => JSON.stringify({ detail: { error_type: "max_tokens_exceeded" } }) }; };
+  await assert.rejects(
+    classifyBatch({ apiKey: "k", page: {}, elements: [{ id: "e0", desc: {} }] }, { fetchImpl, sleep: async () => {} }),
+    (err) => err instanceof JevError && err.tooBig && /too large/.test(err.message)
+  );
+  assert.equal(calls, 1);
+});

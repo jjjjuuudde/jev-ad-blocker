@@ -89,6 +89,8 @@ export class JevError extends Error {
     this.status = status;
     this.body = body;
   }
+  /** jev's 400 for a request over its input-token ceiling; the caller should split the batch. */
+  get tooBig() { return this.status === 400 && /max_tokens_exceeded/.test(String(this.body || "")); }
 }
 
 const RETRYABLE = new Set([429, 529, 500, 502, 503, 504]);
@@ -143,6 +145,7 @@ function backoff(base, attempt, retryAfter) {
 
 function describeStatus(status, text) {
   switch (status) {
+    case 400: return /max_tokens_exceeded/.test(text) ? "jev request too large (400 max_tokens_exceeded); lower the token budget per request in options." : `jev rejected the request (400): ${trim(text)}`;
     case 401: return "jev rejected the API key (401). Check the key in .env or the options page.";
     case 422: return `jev rejected the request (422): ${trim(text)}`;
     case 429: return "jev rate limit hit (429) and retries were exhausted.";

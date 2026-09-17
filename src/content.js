@@ -214,8 +214,7 @@
     // Likely ads first, so they go in the first round trip instead of waiting
     // behind hundreds of ordinary elements.
     const items = candidates.items.map((it, i) => ({ it, i })).sort((a, b) => (b.it.priority - a.it.priority) || (a.i - b.i)).map((x) => x.it);
-    const batches = [];
-    for (let i = 0; i < items.length; i += settings.batchSize) batches.push(items.slice(i, i + settings.batchSize));
+    const batches = batchItems(items, settings);
 
     let cursor = 0;
     const worker = async () => {
@@ -255,6 +254,25 @@
       }
     };
     await Promise.all(Array.from({ length: Math.max(1, settings.concurrency) }, worker));
+  }
+
+  // Split into batches bounded by count and by estimated tokens: a request's
+  // size is dominated by the per-element description plus the ~700 chars of
+  // question text jev needs per element, and jev rejects oversized requests.
+  const QUESTION_CHARS = 700;
+  function batchItems(items, settings) {
+    const maxCount = Math.max(1, settings.batchSize | 0);
+    const maxChars = Math.max(2000, (Number(settings.batchTokens) || 32000) * 3);
+    const batches = [];
+    let cur = [], chars = 0;
+    for (const it of items) {
+      const cost = JSON.stringify(it.desc).length + QUESTION_CHARS;
+      if (cur.length && (cur.length >= maxCount || chars + cost > maxChars)) { batches.push(cur); cur = []; chars = 0; }
+      cur.push(it);
+      chars += cost;
+    }
+    if (cur.length) batches.push(cur);
+    return batches;
   }
 
   // ---------- watching for elements added after load ----------

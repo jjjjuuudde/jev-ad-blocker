@@ -1,7 +1,7 @@
 import { DEFAULT_SETTINGS, getSettings, saveSettings, getSyncedKey } from "./settings.js";
 
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["threshold", "maxElements", "batchSize", "concurrency", "model", "cacheDays", "cleanCacheMinutes", "action", "maxTextShare", "viewportOnly", "screenshots", "watchDom", "collapseEmptyWrappers", "debug", "enabled"];
+const FIELDS = ["threshold", "maxElements", "batchSize", "batchTokens", "concurrency", "model", "cacheDays", "cleanCacheMinutes", "action", "maxTextShare", "viewportOnly", "screenshots", "watchDom", "collapseEmptyWrappers", "debug", "enabled"];
 
 async function load() {
   const s = await getSettings();
@@ -35,6 +35,7 @@ function read() {
   s.protectedSelectors = $("protectedSelectors").value.split(/\n/).map((x) => x.trim()).filter(Boolean);
   if (!(s.threshold >= 0 && s.threshold <= 1)) s.threshold = DEFAULT_SETTINGS.threshold;
   if (!(s.batchSize >= 1)) s.batchSize = DEFAULT_SETTINGS.batchSize;
+  if (!(s.batchTokens >= 1000)) s.batchTokens = DEFAULT_SETTINGS.batchTokens;
   if (!(s.concurrency >= 1)) s.concurrency = DEFAULT_SETTINGS.concurrency;
   if (!(s.maxElements >= 0)) s.maxElements = DEFAULT_SETTINGS.maxElements;
   if (!(s.cacheDays >= 0)) s.cacheDays = DEFAULT_SETTINGS.cacheDays;

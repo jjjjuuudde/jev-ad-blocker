@@ -45,7 +45,8 @@ Defaults (all adjustable on the options page):
 | Keep watching after load | on | classifies elements the site adds later (refreshing ad slots) |
 | Remove empty wrappers | on | takes out the ad's container once it has no text or media left |
 | Max elements per load | 0 (no cap) | every rendered element goes to jev; set a number to stop early on huge pages |
-| Elements per request | 200 | jev answers 400 in ~1 s; its 1,200/min limit counts requests |
+| Elements per request | 200 | a count cap; the token budget below usually closes a batch first |
+| Token budget per request | 32k | jev rejects requests above ~40k input tokens (`max_tokens_exceeded`); real elements cost ~250-400 tokens each |
 | Requests in flight | 6 | jev allows 1,200 requests a minute |
 | Action | remove (restorable) | "hide" and "outline" (testing: red border, keeps the ad) are available |
 | Only classify what is on screen | on | elements are classified as they scroll into view |
@@ -58,7 +59,7 @@ Elements are taken in document order. By default only the ones intersecting the 
 
 jev allows 1,200 requests a minute and 250,000 tokens a second; requests are the tight one. Four things keep the count down:
 
-- **Big batches.** 200 questions per request by default (jev answers 400 in about a second, no slower than 100).
+- **Big batches.** Up to 200 questions per request, closed early at an estimated 32k input tokens (jev rejects requests somewhere above 40k with `max_tokens_exceeded`; a real element with its question costs 250-400 tokens, so a batch is usually 80-120 elements). If jev still rejects one, the worker halves it and retries both halves.
 - **Candidate filter.** Text-level elements (`span`, `p`, headings, list items, ...), text-only leaves, anything under 20 px, and wrappers whose only child fills the same box are never sent; the container around them is. Anything with an ad hint, media, an iframe or a link is always sent. On a YouTube page this cuts the questions by well over half.
 - **Rate limiter.** The worker runs one token bucket (15 requests a second) across every tab and honours jev's `Retry-After` on a 429, so retries don't pile up.
 - **Clean cache.** A confident "not an ad" verdict (p < 0.2) is reused for 60 minutes; navigating within a single-page site only sends the new elements.

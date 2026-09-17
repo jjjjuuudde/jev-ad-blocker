@@ -13,6 +13,11 @@ export const DEFAULT_SETTINGS = {
   // answers 400 questions in about a second, no slower than 100, and the rate
   // limit is per request (1,200/min), so big batches are the main lever.
   batchSize: 200,
+  // Upper bound on a request's estimated input tokens (JSON chars / 3). jev
+  // rejects requests somewhere above ~40k input tokens with
+  // max_tokens_exceeded; a batch closes when the next element would cross
+  // this, whichever of batchSize / batchTokens comes first.
+  batchTokens: 32000,
   // Requests in flight at once (jev allows 1,200 requests a minute).
   concurrency: 6,
   // "remove" detaches the node (restorable from the popup), "hide" sets
