@@ -1,5 +1,5 @@
 // Service worker: owns the API key, talks to jev, caches verdicts, keeps per-tab stats.
-import { classifyBatch, hashString, makeLimiter } from "./jev.js";
+import { classifyBatch, makeLimiter } from "./jev.js";
 import { getSettings, getApiKey, getSyncedKey } from "./settings.js";
 
 const CACHE_KEY = "verdictCache";
@@ -243,4 +243,3 @@ function saveCache(cache) {
   return cacheSaving;
 }
 
-export { hashString };

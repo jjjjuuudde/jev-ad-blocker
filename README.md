@@ -1,16 +1,22 @@
 # jev ad blocker
 
-A personal Chrome extension. On every page load it walks the rendered elements on the page, describes each one (tag, classes, size, where its links and images point, a snippet of text, and so on), sends them to [jev](https://docs.typesafe.ai/introduction) in batches, and removes the elements jev is confident are ads.
+A personal Chrome extension (MIT licensed). On every page load it walks the rendered elements on the page, describes each one (tag, classes, size, where its links and images point, a snippet of text, and so on), sends them to [jev](https://docs.typesafe.ai/introduction) in batches, and removes the elements jev is confident are ads.
+
+## Requirements
+
+- Google Chrome (or another Chromium browser that loads unpacked Manifest V3 extensions). Firefox and Safari are not supported.
+- A jev API key from https://console.typesafe.ai/settings/keys. Usage is billed to that key; see [Cost](#cost).
+- Node.js, only for `npm run sync-key`. Without it, paste the key on the options page instead.
 
 ## Setup
 
-1. Paste your jev API key into `.env`:
+1. Copy `.env.example` to `.env` and paste your jev API key after the `=`:
 
    ```
-   TYPESAFE_API_KEY=your-key-here
+   cp .env.example .env
    ```
 
-   Keys live at https://console.typesafe.ai/settings/keys.
+   Keys live at https://console.typesafe.ai/settings/keys. `.env` is git-ignored, so the key stays on your machine.
 
 2. Generate the file the extension reads the key from (Chrome can't read `.env` itself):
 
@@ -18,7 +24,7 @@ A personal Chrome extension. On every page load it walks the rendered elements o
    npm run sync-key
    ```
 
-   This writes `src/config.local.js` (git-ignored) and marks `.env` `skip-worktree` so your key doesn't get committed by accident.
+   This writes `src/config.local.js` (also git-ignored).
 
    No Node handy? Skip this step and paste the key on the extension's options page instead.
 
@@ -29,7 +35,30 @@ A personal Chrome extension. On every page load it walks the rendered elements o
 
 4. Open the options page (click the extension icon, then **Options**) and hit **Test key** to confirm jev answers.
 
+## How to use it
+
+Once the extension is loaded, it runs on its own:
+
+1. Open any page. Ads near the viewport are hidden within a second or two; the rest are classified as you scroll toward them.
+2. Click the toolbar icon to open the popup. It shows what was classified, what was hidden (with a screenshot and jev's probability), and what the page cost.
+3. Something disappeared that shouldn't have? Click **Show** next to the entry to see it for three seconds, or **Restore removed** to put everything back. Raise the threshold on the options page if it keeps happening.
+4. An ad got through? Click **Rescan page** for a full fresh pass. Lower the threshold in options to block more aggressively.
+5. Want it off on one site? Untick **Run on this site** in the popup. Want it off everywhere? Untick **Extension enabled** on the options page.
+
 Whenever you change the key or pull new code, run `npm run sync-key` again and click the reload icon on the extension's card in `chrome://extensions`. The worker then re-injects the content script into every open tab, so you don't have to reload them.
+
+## Limitations
+
+- **Chrome only.** It is a Manifest V3 extension loaded unpacked. It is not on the Chrome Web Store, and it does not run in Firefox or Safari.
+- **No video ads.** Ads that play inside a video player (YouTube pre-rolls and mid-rolls, Twitch, etc.) are not touched: they play inside the same `<video>` element as the content, so there is no separate element to hide. YouTube's player is on the protected list so the skip button stays.
+- **It costs money.** Every page you visit is sent to jev and billed to your key. A typical page is a fraction of a cent; a heavy news page with **Only classify what is near the screen** turned off is a few cents.
+- **It needs a round trip.** An ad is visible until jev answers, usually under a second. Ads inserted right as they scroll into view (Pinterest, X) can flash briefly.
+- **It can be wrong.** jev gives a probability, and the threshold decides. Some ads get through; occasionally a piece of real content is hidden. The popup's **Show** and **Restore removed** buttons are the fix, along with the threshold and the protected-elements list.
+- **Pages are described to a third party.** See the next section.
+
+## What leaves your browser
+
+Every page you visit with the extension enabled is described to jev: for each rendered element, its tag, classes, size, the hosts its links and images point to, and up to 200 characters of its text, plus the page URL and title. Nothing is stored by the extension beyond verdict hashes in your browser profile. Turn it off per site from the popup, or disable it on the options page, for pages you don't want described to a third party.
 
 ## How it decides
 
@@ -118,3 +147,8 @@ Layout:
 - `src/settings.js` defaults and storage helpers
 - `src/popup.*`, `src/options.*` UI
 - `scripts/sync-key.mjs` `.env` to `src/config.local.js`
+- `.env.example` template for `.env`
+
+## License
+
+[MIT](LICENSE).
