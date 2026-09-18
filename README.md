@@ -50,11 +50,11 @@ Defaults (all adjustable on the options page):
 | Requests in flight | 6 | jev allows 1,200 requests a minute |
 | Action | hide (restorable) | display:none in place; "remove" detaches the node but blanks React-style sites, "outline" is for testing |
 | Only classify what is near the screen | on | elements are classified as they come near the view |
-| Look ahead | 1.5 screens | classified before the user scrolls to them, so nothing shifts under them |
+| Look ahead | 4 screens | classified before the user scrolls to them, so nothing shifts under them |
 | Text-share safety rail | 50% | never removes an element holding more than half the page's text |
 | Protected elements | YouTube's player | `hostname selector` lines; nothing inside a match is classified or removed |
 
-Elements are taken in document order. By default only the ones in a band around the viewport are sent on load: the visible area, half a screen above, and 1.5 screens below (**Look ahead** in options), so ads are gone before the user scrolls to them and nothing shifts while they read. The rest are classified as they come near, so a long page costs only what you actually get to. Turn **Only classify what is on screen** off to do the whole page at once (a busy news page is a few thousand elements, roughly 100 requests). Anything not rendered (`display: none`, zero rects), `script`/`style`/`head` and SVG internals are skipped. When a parent is removed, its children are dropped from later batches instead of being classified.
+Elements are taken in document order. By default only the ones in a band around the viewport are sent on load: the visible area, half a screen above, and 4 screens below (**Look ahead** in options), so ads are gone before the user scrolls to them and nothing shifts while they read. The rest are classified as they come near, so a long page costs only what you actually get to. Turn **Only classify what is on screen** off to do the whole page at once (a busy news page is a few thousand elements, roughly 100 requests). Anything not rendered (`display: none`, zero rects), `script`/`style`/`head` and SVG internals are skipped. When a parent is removed, its children are dropped from later batches instead of being classified.
 
 ## Staying under the rate limit
 

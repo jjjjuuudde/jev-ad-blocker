@@ -35,7 +35,7 @@ export const DEFAULT_SETTINGS = {
   // How far below the viewport to classify ahead of the user, in viewport
   // heights, so ads are gone before they scroll into view instead of
   // disappearing while they look at them. Half a screen above is also covered.
-  lookAhead: 1.5,
+  lookAhead: 4,
   // Reuse a verdict for this many days instead of asking jev again. 0 means
   // every page load classifies fresh: a load costs a fraction of a cent, and
   // fresh verdicts follow the page as it changes.
