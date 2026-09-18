@@ -27,7 +27,12 @@
   const MAX_TEXT = 200;
   const MAX_ATTR = 120;
   const MAX_HTML = 800;            // outerHTML snippet kept per removed element, for the popup
-  const WATCH_DEBOUNCE_MS = 250;   // let a burst of DOM insertions settle before classifying
+  const WATCH_DEBOUNCE_MS = 200;   // trailing: let a burst of DOM insertions settle before classifying
+  const WATCH_LEAD_MS = 30;        // leading: the first change after a quiet spell runs almost at once
+  const MAX_INCREMENTAL = 3;       // incremental passes may overlap up to this many
+  // Exact ad labels sites put on paid items; an inserted element carrying one
+  // jumps the queue: its own small request, sent at once, label included.
+  const LABEL_RE = /^(ad|ads|sponsored|promoted|advertisement|(sponsored|promoted|paid partnership) (by|with) .{1,60}|publicit[eé]|anzeige)$/i;
   const SCROLL_DEBOUNCE_MS = 150;
   const VIEWPORT_MARGIN = 0.1;     // sideways / above-the-fold slack (fraction of viewport size)
   const LOOK_BEHIND = 0.5;         // viewport heights above the fold (for scrolling back up)
@@ -64,7 +69,10 @@
   const memory = new Map();
   let lastSettings = null;       // from the most recent prepare(), for synchronous replay
   let lastTextTotal = 0;
-  let running = false;
+  let running = false;           // a full pass is in progress (exclusive)
+  let activeIncremental = 0;     // incremental passes in flight (they may overlap)
+  let lastIncrementalAt = 0;
+  const urgent = [];             // labelled cards waiting for their own fast-tracked request
   let paused = false;            // after "restore": leave the page alone until a rescan
   let nextId = 0;
   let observer = null;
@@ -151,6 +159,7 @@
     paused = false;
     seen = new WeakSet();
     memory.clear();
+    urgent.length = 0; // this pass classifies everything afresh
     state.status = "scanning";
     state.startedAt = Date.now();
     state.finishedAt = 0;
@@ -191,33 +200,37 @@
   // Incremental pass over subtrees the site added after the initial pass.
   async function runIncremental() {
     if (running || paused) return;
+    if (activeIncremental >= MAX_INCREMENTAL) return; // rescheduled when one finishes
     const roots = [...pendingRoots].filter((el) => el.isConnected && !seen.has(el));
     pendingRoots = new Set();
-    if (!roots.length) return;
-    running = true;
+    const pending = urgent.splice(0);
+    if (!roots.length && !pending.length) return;
+    activeIncremental += 1;
+    lastIncrementalAt = Date.now();
     state.status = "scanning";
     try {
       const ctx = await prepare();
       if (!ctx) return;
       requestCapture(ctx.settings);
       const candidates = collect(ctx.settings, roots);
+      candidates.items.unshift(...pending); // labelled cards go first, in their own request
       state.totalElements = candidates.total;
       state.capped = state.capped || candidates.capped;
       state.late += candidates.items.length;
       if (ctx.settings.debug) console.log(`[jev-ad] incremental: ${candidates.items.length} new elements to classify`, candidates.items);
       await classifyAll(ctx, candidates);
-      state.status = "done";
     } catch (err) {
       state.status = "error";
       state.errors.push(err.message || String(err));
     } finally {
+      activeIncremental -= 1;
+      if (!running && !activeIncremental && state.status === "scanning") state.status = "done";
       state.finishedAt = Date.now();
-      running = false;
       await report();
       if (queuedRun) {
         queuedRun = false;
         run("queued").catch(() => {});
-      } else if (pendingRoots.size) scheduleIncremental();
+      } else if (pendingRoots.size || urgent.length) scheduleIncremental();
     }
   }
 
@@ -225,7 +238,10 @@
     // Likely ads first, so they go in the first round trip instead of waiting
     // behind hundreds of ordinary elements.
     const items = candidates.items.map((it, i) => ({ it, i })).sort((a, b) => (b.it.priority - a.it.priority) || (a.i - b.i)).map((x) => x.it);
-    const batches = batchItems(items, settings);
+    // Labelled cards ride in a small request of their own so the answer for
+    // the one thing that matters most isn't behind a hundred other elements.
+    const fast = items.filter((it) => it.urgent);
+    const batches = (fast.length ? [fast] : []).concat(batchItems(items.filter((it) => !it.urgent), settings));
 
     let cursor = 0;
     const worker = async () => {
@@ -300,10 +316,12 @@
           // Known nodes (re-mounted by a virtualised list) get their verdict now,
           // before the site can paint them; the rest wait for the debounced pass.
           if (memory.size && budget > 0) budget -= replayKnown(node, budget);
+          // Labelled ads ("Sponsored", "Promoted by ...") jump the queue.
+          if (lastSettings && budget > 0) budget -= queueLabelled(node, budget);
           pendingRoots.add(node);
         }
       }
-      if (pendingRoots.size) scheduleIncremental();
+      if (pendingRoots.size || urgent.length) scheduleIncremental();
     });
     observer.observe(document.body, { childList: true, subtree: true });
   }
@@ -331,6 +349,50 @@
       act({ el, id: "", summary: summarize(el, { src: hostOf(el.currentSrc || el.src), text: normText(el.textContent) }), loose: "" }, p, settings, lastTextTotal);
     }
     return n;
+  }
+
+  // ---------- fast track for labelled ads ----------
+
+  // Scan a freshly added subtree for an exact ad label; describe the card
+  // around it now (label included, so jev sees it) and queue it for the next
+  // pass, where it goes first in a request of its own. Nothing is hidden
+  // until jev answers. Returns the number of nodes looked at.
+  function queueLabelled(root, budget) {
+    let n = 0;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let t = walker.nextNode(); t && n < budget; t = walker.nextNode()) {
+      n++;
+      const v = t.nodeValue.trim();
+      if (v.length < 2 || v.length > 80 || !LABEL_RE.test(v)) continue;
+      const label = t.parentElement;
+      if (!label || normText(label.textContent) !== v) continue; // the label is the element's whole text
+      const card = adCardFor(label);
+      if (!card || seen.has(card) || takenOut.has(card)) continue;
+      if (lastSettings.protectedSelector && isProtected(card, lastSettings.protectedSelector)) continue;
+      const desc = describe(card);
+      desc.adLabel = v.slice(0, 60);
+      seen.add(card);
+      urgent.push({ el: card, id: `e${nextId++}`, desc, sig: signature(desc), summary: summarize(card, desc) + ` [label: ${v.slice(0, 30)}]`, rect: visibleRect(card.getBoundingClientRect()), priority: 4, loose: looseKeyOf(card), urgent: true });
+    }
+    return n;
+  }
+
+  // The card around a label: the nearest ancestor with real structure (two or
+  // more children) that is much bigger than the label but not most of the
+  // screen. On Pinterest that is the pin card, on X the post.
+  function adCardFor(label) {
+    const lr = label.getBoundingClientRect();
+    const labelArea = Math.max(1, lr.width * lr.height);
+    const maxArea = innerWidth * innerHeight * 0.6;
+    let p = label.parentElement;
+    for (let i = 0; p && p !== document.body && i < 12; i++, p = p.parentElement) {
+      if (TEXT_TAGS.has(p.tagName.toLowerCase())) continue;
+      const r = p.getBoundingClientRect();
+      const area = r.width * r.height;
+      if (area > maxArea) return null;
+      if (p.childElementCount >= 2 && area >= labelArea * 8 && r.height >= 60) return p;
+    }
+    return null;
   }
 
   // Two elements with the same key but verdicts on opposite sides of the
@@ -425,9 +487,12 @@
 
   // Sites often add an ad in several steps (wrapper, then iframe, then its
   // contents); wait for the burst to settle before classifying.
+  // Leading edge after a quiet spell (an ad that just landed in view shouldn't
+  // wait out the debounce), trailing edge for the rest of the burst.
   function scheduleIncremental() {
-    clearTimeout(watchTimer);
-    watchTimer = setTimeout(() => { watchTimer = 0; runIncremental().catch(() => {}); }, WATCH_DEBOUNCE_MS);
+    if (watchTimer) return;
+    const quiet = Date.now() - lastIncrementalAt > WATCH_DEBOUNCE_MS * 2;
+    watchTimer = setTimeout(() => { watchTimer = 0; runIncremental().catch(() => {}); }, quiet ? WATCH_LEAD_MS : WATCH_DEBOUNCE_MS);
   }
 
   // ---------- single-page navigation ----------
@@ -558,6 +623,7 @@
   // Rough "how much does this smell like an ad" score used only to order the
   // queue; jev still makes the call.
   function adPriority(d) {
+    if (d.adLabel) return 4;
     if (d.dataAd || (d.attrHints && d.attrHints.length)) return 3;
     if (d.tag === "iframe") return 3;
     const here = location.hostname;
@@ -665,7 +731,7 @@
   function signature(d) {
     const parts = [
       location.hostname, d.tag, d.id || "", d.class || "", d.role || "", d.href || "", d.src || "",
-      d.dataAd || "", (d.attrHints || []).join("|"), (d.linkHosts || []).join(","),
+      d.dataAd || "", d.adLabel || "", (d.attrHints || []).join("|"), (d.linkHosts || []).join(","),
       (d.imgHosts || []).join(","), (d.iframeHosts || []).join(","), (d.text || "").slice(0, 100),
       (d.ancestors || []).join(">"),
     ];
@@ -854,6 +920,7 @@
     records.length = 0;
     takenOut.clear();
     pendingRoots = new Set();
+    urgent.length = 0;
     state.removed = [];
     state.skipped = [];
     if (observer && document.body) observer.observe(document.body, { childList: true, subtree: true });

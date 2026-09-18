@@ -50,11 +50,11 @@ Defaults (all adjustable on the options page):
 | Requests in flight | 6 | jev allows 1,200 requests a minute |
 | Action | hide (restorable) | display:none in place; "remove" detaches the node but blanks React-style sites, "outline" is for testing |
 | Only classify what is near the screen | on | elements are classified as they come near the view |
-| Look ahead | 4 screens | classified before the user scrolls to them, so nothing shifts under them |
+| Look ahead | 2 screens | classified before the user scrolls to them, so nothing shifts under them |
 | Text-share safety rail | 50% | never removes an element holding more than half the page's text |
 | Protected elements | YouTube's player | `hostname selector` lines; nothing inside a match is classified or removed |
 
-Elements are taken in document order. By default only the ones in a band around the viewport are sent on load: the visible area, half a screen above, and 4 screens below (**Look ahead** in options), so ads are gone before the user scrolls to them and nothing shifts while they read. The rest are classified as they come near, so a long page costs only what you actually get to. Turn **Only classify what is on screen** off to do the whole page at once (a busy news page is a few thousand elements, roughly 100 requests). Anything not rendered (`display: none`, zero rects), `script`/`style`/`head` and SVG internals are skipped. When a parent is removed, its children are dropped from later batches instead of being classified.
+Elements are taken in document order. By default only the ones in a band around the viewport are sent on load: the visible area, half a screen above, and 2 screens below (**Look ahead** in options), so ads are gone before the user scrolls to them and nothing shifts while they read. The rest are classified as they come near, so a long page costs only what you actually get to. Turn **Only classify what is on screen** off to do the whole page at once (a busy news page is a few thousand elements, roughly 100 requests). Anything not rendered (`display: none`, zero rects), `script`/`style`/`head` and SVG internals are skipped. When a parent is removed, its children are dropped from later batches instead of being classified.
 
 ## Staying under the rate limit
 
@@ -65,6 +65,10 @@ jev allows 1,200 requests a minute and 250,000 tokens a second; requests are the
 - **Rate limiter.** The worker runs one token bucket (15 requests a second) across every tab and honours jev's `Retry-After` on a 429, so retries don't pile up.
 - **Confident cache.** A confident verdict either way (p < 0.2, or p at or above the removal threshold) is reused for 60 minutes; navigating within a single-page site only sends the new elements.
 - **Page memory.** Within a page, every verdict is also remembered by a loose signature (tag, classes, text, the paths of the first links and images inside, alt text; no ids or positions). If two elements share a key but get verdicts on opposite sides of the threshold, the key is forgotten rather than trusted. Virtualised lists such as Pinterest's grid unmount pins as you scroll away and create fresh nodes when you scroll back; those get their verdict re-applied synchronously in the mutation observer, before the site can paint them, with no request.
+
+## Labelled ads jump the queue
+
+Some sites (Pinterest, X) insert a paid item only as it is about to come into view, so the jev round trip is the whole delay. When the DOM watcher sees an inserted element whose text label is exactly an ad marker ("Sponsored", "Promoted by …", "Ad", "Anzeige", ...), it describes the card around the label right away (the nearest ancestor with two or more children that is much larger than the label and not most of the screen), adds the label to the description as `adLabel` so jev sees it, and sends those cards first, in a small request of their own, ahead of the rest of the pass. Nothing is hidden until jev answers. Incremental passes start within 30 ms of the first change after a quiet spell and may overlap, so a newly inserted ad no longer waits behind a pass that is already running.
 
 ## When it runs
 
